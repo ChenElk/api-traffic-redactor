@@ -1,0 +1,61 @@
+# Redaction rules for API traffic logs.
+version: 1
+
+settings:
+  mask:    { replacement: "****" }
+  partial: { keep_last: 4, fill: "*" }
+  hash:    { algorithm: sha256 }
+
+# key_rules match on the NAME of a JSON key or HTTP header.
+#   scope: headers | body | any
+#   match: either { exact: [names...] } or { regex: "..." }
+key_rules:
+  - name: auth-headers
+    scope: headers
+    match:
+      exact: [Authorization, Proxy-Authorization, X-Auth-Token, Cookie, Set-Cookie]
+    action: mask
+
+  - name: api-key-names
+    scope: any
+    match:
+      regex: '(?i)^(x-)?api[_-]?key$'
+    action: hash
+
+  - name: secret-fields
+    scope: body
+    match:
+      regex: '(?i)^(password|passwd|pwd|secret|client_secret|token)$'
+    action: mask
+
+  - name: card-number-fields
+    scope: body
+    match:
+      regex: '(?i)^(card_?number|pan)$'
+    action: partial
+
+  - name: cvv-fields
+    scope: body
+    match:
+      regex: '(?i)^(cvv|cvc|cvv2)$'
+    action: remove
+
+# value_rules match on the CONTENT of any string value, whatever its key is called.
+#   validator (optional): the match only counts if the validator accepts it. Supported: luhn
+value_rules:
+  - name: email
+    pattern: '[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}'
+    action: hash
+
+  - name: jwt
+    pattern: 'eyJ[A-Za-z0-9+/=]+\.[A-Za-z0-9+/=]+\.[A-Za-z0-9+/=]*'
+    action: mask
+
+  - name: credit-card
+    pattern: '\b\d{13,19}\b'
+    validator: luhn
+    action: partial
+
+  - name: api-key-prefix
+    pattern: '\bsk_(?:live|test)_[A-Za-z0-9]+\b'
+    action: mask
