@@ -180,20 +180,12 @@ def test_an_unexpected_error_in_the_engine_is_contained():
                 raise RuntimeError(f"cannot handle {line!r}")
             return line
 
-    reports = []
-    stream = RedactionStream(ExplodingRedactor(), report=lambda *event: reports.append(event))
+    stream = RedactionStream(ExplodingRedactor())
     output = stream.feed(b'{"a":1}\n{"boom":"hunter2"}\n{"b":2}\n') + stream.finish()
 
     assert output_lines(output) == [b'{"a":1}', placeholder(REASON_INTERNAL_ERROR, 2), b'{"b":2}']
     assert b"hunter2" not in output
-    assert reports == [(2, REASON_INTERNAL_ERROR)]
-
-
-def test_every_replaced_line_is_reported_without_its_content():
-    reports = []
-    run_stream(SAMPLE, report=lambda number, reason: reports.append((number, reason)))
-    # Blank lines are not problems and are not reported.
-    assert reports == [(20, "invalid_json"), (21, "invalid_json"), (50, "invalid_json")]
+    assert stream.stats.replaced == Counter({REASON_INTERNAL_ERROR: 1})
 
 
 def test_output_that_cannot_be_encoded_is_replaced_and_the_stream_goes_on():
@@ -215,6 +207,20 @@ def test_output_that_cannot_be_encoded_is_replaced_and_the_stream_goes_on():
     assert b"hunter2" not in output
     assert stream.stats.replaced == Counter({REASON_INTERNAL_ERROR: 1})
     assert stream.stats.processed == 2
+
+
+def test_many_replaced_lines_are_only_counted():
+    # No message and no list is kept per replaced line: the stream holds two
+    # counters however many lines fail, and each placeholder sits on its line.
+    data = b"".join(b"broken %d\n" % n if n % 2 else b'{"n":%d}\n' % n for n in range(1, 201))
+    output, stream = run_stream(data, chunk_size=97)
+    lines = output_lines(output)
+    assert len(lines) == 200
+    for number, line in enumerate(lines, start=1):
+        expected = placeholder("invalid_json", number) if number % 2 else b'{"n":%d}' % number
+        assert line == expected
+    assert stream.stats.replaced == Counter({"invalid_json": 100})
+    assert stream.stats.processed == 100
 
 
 # --- line endings, blank lines, BOM, last line --------------------------------

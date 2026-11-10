@@ -23,7 +23,6 @@ expressions behave on the data.
 """
 
 from collections import Counter
-from collections.abc import Callable
 from dataclasses import dataclass, field
 
 from redactor.engine import RecordError, Redactor
@@ -71,24 +70,17 @@ class RedactionStream:
         redactor: The engine. Its `counts` hold the redactions per rule.
         max_line_bytes: Longest line, in bytes without its newline, that is
             still processed. A longer line is replaced by a placeholder.
-        report: Optional callback `report(line_number, reason)` invoked for
-            every replaced line. It receives nothing from the input.
 
     Attributes:
-        stats: Running StreamStats for this stream.
+        stats: Running StreamStats for this stream. Replaced lines are only
+            counted here, per reason; no list of them is kept.
     """
 
-    def __init__(
-        self,
-        redactor: Redactor,
-        max_line_bytes: int = DEFAULT_MAX_LINE_BYTES,
-        report: Callable[[int, str], None] | None = None,
-    ):
+    def __init__(self, redactor: Redactor, max_line_bytes: int = DEFAULT_MAX_LINE_BYTES):
         if max_line_bytes < 1:
             raise ValueError("max_line_bytes must be at least 1")
         self._redactor = redactor
         self._max_line_bytes = max_line_bytes
-        self._report = report
         # The current line, as far as it has arrived. A bytearray grows in
         # place, so a line delivered one byte at a time still costs linear
         # time; joining bytes objects would copy the line on every chunk.
@@ -198,6 +190,4 @@ class RedactionStream:
         visible to whoever reads it, and nothing from the line can leak.
         """
         self.stats.replaced[reason] += 1
-        if self._report is not None:
-            self._report(number, reason)
         return b'{"redactor_error":"%s","line":%d}' % (reason.encode("ascii"), number)

@@ -1,11 +1,14 @@
 """Command-line interface: `redactor [--rules rules.yaml] [input-file]`.
 
 Reads NDJSON from a file or from stdin and writes the redacted NDJSON to
-stdout. Everything else goes to stderr: one line for each record that had to
-be replaced, and a summary with the number of redactions per rule.
+stdout as it goes. When the input is finished, one summary is printed to
+stderr: how many lines were read, processed, blank and replaced, the replaced
+ones per reason, and the number of redactions per rule.
 
-stdout carries data only. stderr never carries input data: it shows line
-numbers, fixed reason codes, rule names and counts.
+stdout carries data only. stderr never carries input data: the summary is
+built from counters, fixed reason codes and rule names. A record that could
+not be processed is not reported one by one; its placeholder on stdout holds
+the line number and the reason.
 
 Exit codes:
     0  every record was processed
@@ -27,10 +30,9 @@ EXIT_IO_ERROR = 1
 EXIT_USAGE = 2
 EXIT_RECORDS_REPLACED = 3
 
+# How much input is read, redacted and written at a time. This bounds the
+# memory of a run: see RedactionStream.feed.
 _CHUNK_BYTES = 64 * 1024
-# Replaced lines reported one by one before only counting them. Without a
-# limit, a large file of garbage would produce one stderr line per input line.
-_MAX_REPORTED_LINES = 20
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -50,7 +52,7 @@ def main(argv: list[str] | None = None) -> int:
         return EXIT_USAGE
 
     redactor = Redactor(rules)
-    stream = RedactionStream(redactor, args.max_line_bytes, report=_LineReporter())
+    stream = RedactionStream(redactor, args.max_line_bytes)
     try:
         _copy(args.input, stream)
     except OSError as error:
@@ -121,30 +123,21 @@ def _copy(input_path: str | None, stream: RedactionStream) -> None:
             source.close()
 
 
-class _LineReporter:
-    """Reports replaced lines on stderr, one by one up to a limit."""
-
-    def __init__(self) -> None:
-        self._reported = 0
-
-    def __call__(self, line_number: int, reason: str) -> None:
-        self._reported += 1
-        if self._reported <= _MAX_REPORTED_LINES:
-            _say(f"line {line_number}: {reason}, replaced by a placeholder")
-        elif self._reported == _MAX_REPORTED_LINES + 1:
-            _say(
-                f"more than {_MAX_REPORTED_LINES} lines replaced; "
-                "the rest are only counted in the summary"
-            )
-
-
 def _print_summary(stream: RedactionStream, redactor: Redactor) -> None:
+    """Print the end-of-run summary to stderr.
+
+    Everything in it comes from counters: no message and no list of failed
+    lines is kept during the run, so a file full of broken lines costs no
+    extra memory and adds no lines to stderr.
+    """
     stats = stream.stats
-    totals = f"{stats.lines} lines: {stats.processed} processed, {stats.blank} blank"
-    replaced = stats.replaced.total()
-    if replaced:
+    totals = (
+        f"{stats.lines} lines: {stats.processed} processed, {stats.blank} blank, "
+        f"{stats.replaced.total()} replaced"
+    )
+    if stats.replaced:
         reasons = ", ".join(f"{reason}: {count}" for reason, count in sorted(stats.replaced.items()))
-        totals += f", {replaced} replaced ({reasons})"
+        totals += f" ({reasons})"
     _say(totals)
     _say("redactions by rule:")
     width = max(len(name) for name in redactor.counts)

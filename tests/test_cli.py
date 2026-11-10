@@ -97,19 +97,21 @@ def test_empty_input():
 def test_the_tool_is_idempotent_end_to_end(sample_run):
     second = run_cli(stdin=sample_run.stdout)
     assert second.stdout == sample_run.stdout
-    # The placeholders are valid records now, so nothing is replaced this time.
+    # The placeholders are valid records now, so nothing is replaced this time
+    # and nothing is left to redact.
     assert second.returncode == EXIT_OK
-    assert "replaced" not in stderr_text(second)
+    lines = stderr_text(second).splitlines()
+    assert lines[0] == "redactor: 50 lines: 48 processed, 2 blank, 0 replaced"
+    assert all(line.endswith(" 0") for line in lines[2:])
 
 
 # --- stderr -------------------------------------------------------------------
 
 
-def test_summary_and_reports_go_to_stderr(sample_run):
+def test_stderr_holds_only_the_summary(sample_run):
+    # Lines 20, 21 and 50 were replaced. They are counted, not reported one
+    # by one: the placeholders on stdout say which lines and why.
     assert stderr_text(sample_run).splitlines() == [
-        "redactor: line 20: invalid_json, replaced by a placeholder",
-        "redactor: line 21: invalid_json, replaced by a placeholder",
-        "redactor: line 50: invalid_json, replaced by a placeholder",
         "redactor: 50 lines: 45 processed, 2 blank, 3 replaced (invalid_json: 3)",
         "redactor: redactions by rule:",
         "  auth-headers        9",
@@ -143,12 +145,68 @@ def test_refused_lines_leave_no_trace_on_stdout(sample_run):
         assert fragment not in sample_run.stdout
 
 
-def test_at_most_twenty_replaced_lines_are_reported_one_by_one():
-    process = run_cli(stdin=b"not json\n" * 25 + b'{"a":1}\n')
-    lines = stderr_text(process).splitlines()
-    assert sum("replaced by a placeholder" in line for line in lines) == 20
-    assert sum("more than 20 lines replaced" in line for line in lines) == 1
-    assert "redactor: 26 lines: 1 processed, 0 blank, 25 replaced (invalid_json: 25)" in lines
+@pytest.mark.parametrize(
+    "data",
+    [SAMPLE, b'{"body":{"password":"x"}}'],
+    ids=["the sample", "a last line without a newline"],
+)
+def test_the_summary_is_written_after_the_last_record(data):
+    # With both streams sent into one pipe, the bytes arrive in the order in
+    # which they were written.
+    merged = subprocess.run(
+        [sys.executable, "-m", "redactor"],
+        input=data,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        cwd=ROOT,
+    ).stdout
+    records = expected_output(data)
+    assert merged.startswith(records)
+    assert merged[len(records) :].startswith(b"redactor: ")
+
+
+def test_many_replaced_lines_add_nothing_to_stderr():
+    # 25 broken lines, each holding a secret, with a good record after every
+    # fifth one: 30 lines in all.
+    lines_in = []
+    for number in range(1, 26):
+        lines_in.append(b'{"password":"hunter2-%d", "user":"erin@example.com"' % number)  # no "}"
+        if number % 5 == 0:
+            lines_in.append(b'{"body":{"password":"x"}}')
+    process = run_cli(stdin=b"\n".join(lines_in) + b"\n")
+
+    # Every placeholder sits on the line of the record it replaced.
+    lines_out = process.stdout.split(b"\n")[:-1]
+    assert len(lines_out) == len(lines_in) == 30
+    for number, (line_in, line_out) in enumerate(zip(lines_in, lines_out), start=1):
+        if b"hunter2" in line_in:
+            assert line_out == b'{"redactor_error":"invalid_json","line":%d}' % number
+        else:
+            assert line_out == b'{"body":{"password":"****"}}'
+
+    # stderr: the totals, the header and one line per rule. Nothing per record.
+    text = stderr_text(process)
+    lines = text.splitlines()
+    assert lines[0] == "redactor: 30 lines: 5 processed, 0 blank, 25 replaced (invalid_json: 25)"
+    assert lines[1] == "redactor: redactions by rule:"
+    assert len(lines) == 2 + 9
+    assert "hunter2" not in text and "erin" not in text and "line " not in text
+    assert process.returncode == EXIT_RECORDS_REPLACED
+
+
+def test_the_summary_counts_replaced_lines_per_reason():
+    data = (
+        b"not json\n"
+        b'{"name":"caf\xe9"}\n'  # 0xE9 alone is Latin-1, not UTF-8
+        b'{"k":"' + b" " * 400 + b'"}\n'  # longer than the limit below
+        b"also not json\n"
+        b'{"a":1}\n'
+    )
+    process = run_cli("--max-line-bytes", "300", stdin=data)
+    assert stderr_text(process).splitlines()[0] == (
+        "redactor: 5 lines: 1 processed, 0 blank, 4 replaced "
+        "(invalid_json: 2, invalid_utf8: 1, line_too_long: 1)"
+    )
     assert process.returncode == EXIT_RECORDS_REPLACED
 
 
@@ -158,7 +216,7 @@ def test_at_most_twenty_replaced_lines_are_reported_one_by_one():
 def test_exit_code_0_when_every_record_was_processed():
     process = run_cli(stdin=b'{"body":{"password":"x"}}\n\n{"a":1}\n')
     assert process.returncode == EXIT_OK == 0
-    assert "replaced" not in stderr_text(process)
+    assert "redactor: 3 lines: 2 processed, 1 blank, 0 replaced" in stderr_text(process)
 
 
 def test_exit_code_3_when_a_record_was_replaced(sample_run):
