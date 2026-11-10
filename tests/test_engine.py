@@ -690,6 +690,13 @@ def test_url_with_query_and_fragment():
     assert out["headers"]["Referer"] == "https://example.com/cb?token=****&page=2#top"
 
 
+def test_the_fragment_of_a_url_is_not_part_of_the_last_value():
+    # Without the split at "#", the fragment would be masked together with
+    # the token and disappear from the output.
+    out = redact_to_data('{"path":"/reset?token=abc#top"}')
+    assert out["path"] == "/reset?token=****#top"
+
+
 def test_spaces_in_a_form_value_are_decoded_before_matching():
     out = redact_to_data('{"body":"note=card+4111111111111111+ok&x=1"}')
     assert out["body"] == "note=card+************1111+ok&x=1"

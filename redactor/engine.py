@@ -342,32 +342,20 @@ class Redactor:
     def _redact_form(self, text: str, depth: int) -> str:
         """Redact `name=value&name=value` pairs; return `text` if nothing changed.
 
-        Handles a form-encoded body and the query string of a URL or path.
-        Field names are checked against the key rules (body scope) and values
-        are percent-decoded before they are inspected, so `bob%40example.com`
-        is recognised as an e-mail address.
-
-        The test for "is this a form" is deliberately loose: no whitespace and
-        at least one `=`. A false positive costs nothing, because the caller
-        still scans the whole string as text afterwards.
+        Handles a form-encoded body and the query string of a URL or path;
+        _split_form finds where the pairs are. Field names are checked against
+        the key rules (body scope) and values are percent-decoded before they
+        are inspected, so `bob%40example.com` is recognised as an e-mail
+        address.
 
         Raises:
             RecordError: At the nesting limit, if a field would have needed
                 decoding: a key rule targets its name, or its value is JSON.
         """
-        if "=" not in text or _WHITESPACE.search(text):
+        parts = _split_form(text)
+        if parts is None:
             return text
-
-        # In "/reset?token=abc" the pairs start after the "?". If an "=" comes
-        # first, as in "a=1&q=what?", the "?" belongs to a value and the whole
-        # string is the list of pairs.
-        question_mark = text.find("?")
-        if question_mark != -1 and "=" not in text[:question_mark]:
-            head = text[: question_mark + 1]
-            query, hash_mark, fragment = text[question_mark + 1 :].partition("#")
-            tail = hash_mark + fragment
-        else:
-            head, query, tail = "", text, ""
+        head, query, tail = parts
 
         at_limit = depth >= MAX_STRING_NESTING
         changed = False
@@ -382,11 +370,18 @@ class Redactor:
             value = unquote_plus(raw_value)
 
             if at_limit:
-                # Nothing is decoded at the limit, so the field is kept as it
-                # is. Being a "form" is only a guess (no spaces and an "="),
-                # which is why an ordinary string is not refused here. A field
-                # that a key rule targets is not a guess, and neither is a
-                # value holding JSON: the call below raises for that.
+                # The nesting limit is reached: this field is not decoded any
+                # further, so it has to be either harmless or refused.
+                #   * A key rule targets the field name: refuse. The value
+                #     should have been redacted, and we may not open it.
+                #   * The value is JSON: refuse. At the limit the call below
+                #     never redacts anything. It raises RecordError for JSON
+                #     and returns None for plain text, and it is called only
+                #     for that check.
+                #   * Anything else: keep the pair as it is. Being a "form" is
+                #     only a guess (no spaces and an "="), so an ordinary
+                #     string must not be refused here. The caller still scans
+                #     the whole string as text.
                 if rule is not None:
                     raise RecordError(REASON_TOO_DEEP)
                 self._redact_embedded_json(value, depth)
@@ -466,6 +461,33 @@ class Redactor:
 
     def _count(self, rule: KeyRule | ValueRule) -> None:
         self._record_counts[rule.name] += 1
+
+
+def _split_form(text: str) -> tuple[str, str, str] | None:
+    """Find the `name=value&name=value` pairs in `text`.
+
+    Returns:
+        (head, pairs, tail), which joined together give `text` again, or None
+        if `text` does not look like a form at all:
+
+            "a=1&b=2"               ->  ("", "a=1&b=2", "")
+            "/reset?token=abc#top"  ->  ("/reset?", "token=abc", "#top")
+
+    The test for "looks like a form" is deliberately loose: no whitespace and
+    at least one `=`. A false positive costs nothing, because the caller
+    still scans the whole string as text afterwards.
+    """
+    if "=" not in text or _WHITESPACE.search(text):
+        return None
+    # In "/reset?token=abc" the pairs start after the "?". If an "=" comes
+    # first, as in "a=1&q=what?", the "?" belongs to a value and the whole
+    # string is the list of pairs.
+    question_mark = text.find("?")
+    if question_mark == -1 or "=" in text[:question_mark]:
+        return "", text, ""
+    head = text[: question_mark + 1]
+    query, hash_mark, fragment = text[question_mark + 1 :].partition("#")
+    return head, query, hash_mark + fragment
 
 
 def _find_matches(rule: ValueRule, text: str) -> list[tuple[int, int]]:
