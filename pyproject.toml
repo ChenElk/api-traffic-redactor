@@ -12,6 +12,9 @@ dependencies = ["PyYAML>=6.0"]
 [project.optional-dependencies]
 dev = ["pytest>=8"]
 
+[project.scripts]
+redactor = "redactor.cli:main"
+
 [tool.setuptools]
 packages = ["redactor"]
 
