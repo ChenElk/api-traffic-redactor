@@ -1,15 +1,18 @@
 """Unit tests for the redaction actions and the Luhn validator."""
 
 import hashlib
+import re
 
 import pytest
 
 from redactor.actions import (
+    ACTIONS,
     HASH,
     HASH_TAG,
     MASK,
     PARTIAL,
     REMOVE,
+    STRICTEST_FIRST,
     ActionSettings,
     apply_action,
     luhn_valid,
@@ -18,6 +21,7 @@ from redactor.actions import (
 )
 
 DEFAULTS = ActionSettings()
+BARE_DIGEST = re.compile(r"[0-9a-f]{64}")
 
 
 # --- partial ----------------------------------------------------------------
@@ -70,38 +74,50 @@ def test_partial_is_idempotent(value):
     assert partial(once, keep_last=4, fill="*") == once
 
 
-# --- hash -------------------------------------------------------------------
+# --- hash: both forms ---------------------------------------------------------
+
+# Standard SHA-256 test vector for "abc".
+ABC_DIGEST = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
 
 
-def test_hash_returns_the_tagged_sha256_of_the_utf8_text():
-    # Standard SHA-256 test vector for "abc".
-    assert sha256_digest("abc") == (
-        "sha256:ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"
-    )
+def test_tagged_and_bare_digest_are_the_same_sha256():
+    assert sha256_digest("abc", tagged=True) == "sha256:" + ABC_DIGEST
+    assert sha256_digest("abc", tagged=False) == ABC_DIGEST
 
 
-def test_hash_encodes_non_ascii_text_as_utf8():
+@pytest.mark.parametrize("tagged", [True, False])
+def test_hash_encodes_non_ascii_text_as_utf8(tagged):
     expected = hashlib.sha256("tanaka@例え.jp".encode("utf-8")).hexdigest()
-    assert sha256_digest("tanaka@例え.jp") == HASH_TAG + expected
+    assert sha256_digest("tanaka@例え.jp", tagged=tagged).endswith(expected)
 
 
-def test_hash_is_deterministic_so_equal_values_can_be_correlated():
-    assert sha256_digest("a@b.com") == sha256_digest("a@b.com")
-    assert sha256_digest("a@b.com") != sha256_digest("A@b.com")
+@pytest.mark.parametrize("tagged", [True, False])
+def test_hash_is_deterministic_so_equal_values_can_be_correlated(tagged):
+    assert sha256_digest("a@b.com", tagged=tagged) == sha256_digest("a@b.com", tagged=tagged)
+    assert sha256_digest("a@b.com", tagged=tagged) != sha256_digest("A@b.com", tagged=tagged)
+
+
+@pytest.mark.parametrize("tagged", [True, False])
+def test_hash_accepts_a_lone_surrogate_without_crashing(tagged):
+    # json.loads('"\\ud83d"') produces this string; strict UTF-8 cannot encode it.
+    result = sha256_digest("\ud83d", tagged=tagged)
+    assert BARE_DIGEST.fullmatch(result.removeprefix(HASH_TAG))
+
+
+# --- hash for a key rule: tagged, recognises its own output --------------------
 
 
 @pytest.mark.parametrize("value", ["sk_live_abc123", "a@b.com", "", "****"])
-def test_hash_is_idempotent(value):
-    once = sha256_digest(value)
-    assert sha256_digest(once) == once
+def test_tagged_hash_is_idempotent(value):
+    once = sha256_digest(value, tagged=True)
+    assert sha256_digest(once, tagged=True) == once
 
 
-def test_hash_does_not_trust_a_bare_64_hex_value():
+def test_tagged_hash_does_not_trust_a_bare_64_hex_value():
     # A genuine API key can look exactly like a SHA-256 digest. It must be
     # hashed, not mistaken for a value that was already redacted.
     genuine_key = "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"
-    result = sha256_digest(genuine_key)
-    assert result != genuine_key
+    result = sha256_digest(genuine_key, tagged=True)
     assert genuine_key not in result
     assert result == HASH_TAG + hashlib.sha256(genuine_key.encode()).hexdigest()
 
@@ -119,19 +135,34 @@ def test_hash_does_not_trust_a_bare_64_hex_value():
         "sha256:" + "a" * 64 + " and more",
     ],
 )
-def test_hash_only_recognises_an_exact_tagged_digest(near_miss):
-    result = sha256_digest(near_miss)
+def test_tagged_hash_only_recognises_an_exact_tagged_digest(near_miss):
+    result = sha256_digest(near_miss, tagged=True)
     assert result != near_miss
     assert result.startswith(HASH_TAG)
     assert len(result) == len(HASH_TAG) + 64
 
 
-def test_hash_accepts_a_lone_surrogate_without_crashing():
-    # json.loads('"\\ud83d"') produces this string; strict UTF-8 cannot encode it.
-    lone_surrogate = "\ud83d"
-    result = sha256_digest(lone_surrogate)
-    assert result.startswith(HASH_TAG)
-    assert sha256_digest(result) == result
+# --- hash for a value rule: bare digest, nothing is ever skipped ---------------
+
+
+def test_bare_hash_has_no_tag():
+    result = sha256_digest("a@b.com", tagged=False)
+    assert BARE_DIGEST.fullmatch(result)
+
+
+@pytest.mark.parametrize(
+    "looks_hashed",
+    [
+        "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08",  # bare 64 hex
+        "sha256:" + "a" * 64,  # the tagged form
+    ],
+)
+def test_bare_hash_never_skips_a_value(looks_hashed):
+    # A value rule only reaches this function with text its pattern matched.
+    # Whatever that text looks like, it is hashed.
+    result = sha256_digest(looks_hashed, tagged=False)
+    assert result != looks_hashed
+    assert result == hashlib.sha256(looks_hashed.encode()).hexdigest()
 
 
 # --- luhn -------------------------------------------------------------------
@@ -192,26 +223,40 @@ def test_luhn_rejects_text_that_is_not_ascii_digits(text):
 
 
 def test_apply_action_mask_ignores_the_value():
-    assert apply_action(MASK, "hunter2", DEFAULTS) == "****"
-    assert apply_action(MASK, "", DEFAULTS) == "****"
-    assert apply_action(MASK, "****", DEFAULTS) == "****"
+    assert apply_action(MASK, "hunter2", DEFAULTS, tagged_hash=True) == "****"
+    assert apply_action(MASK, "", DEFAULTS, tagged_hash=False) == "****"
+    assert apply_action(MASK, "****", DEFAULTS, tagged_hash=True) == "****"
 
 
 def test_apply_action_uses_the_settings():
     settings = ActionSettings(mask_replacement="[REDACTED]", keep_last=2, fill="#")
-    assert apply_action(MASK, "hunter2", settings) == "[REDACTED]"
-    assert apply_action(PARTIAL, "4111111111111111", settings) == "##############11"
+    assert apply_action(MASK, "hunter2", settings, tagged_hash=True) == "[REDACTED]"
+    assert apply_action(PARTIAL, "4111111111111111", settings, tagged_hash=True) == (
+        "##############11"
+    )
 
 
-def test_apply_action_partial_and_hash_delegate():
-    assert apply_action(PARTIAL, "4111111111111111", DEFAULTS) == "************1111"
-    assert apply_action(HASH, "abc", DEFAULTS) == sha256_digest("abc")
+def test_apply_action_partial_delegates():
+    assert apply_action(PARTIAL, "4111111111111111", DEFAULTS, tagged_hash=False) == (
+        "************1111"
+    )
+
+
+def test_apply_action_hash_form_follows_the_caller():
+    assert apply_action(HASH, "abc", DEFAULTS, tagged_hash=True) == "sha256:" + ABC_DIGEST
+    assert apply_action(HASH, "abc", DEFAULTS, tagged_hash=False) == ABC_DIGEST
 
 
 def test_apply_action_remove_returns_empty_text():
-    assert apply_action(REMOVE, "123", DEFAULTS) == ""
+    assert apply_action(REMOVE, "123", DEFAULTS, tagged_hash=False) == ""
 
 
 def test_apply_action_rejects_an_unknown_action():
     with pytest.raises(ValueError):
-        apply_action("encrypt", "value", DEFAULTS)
+        apply_action("encrypt", "value", DEFAULTS, tagged_hash=False)
+
+
+def test_strictness_order_ranks_every_action_exactly_once():
+    assert STRICTEST_FIRST == (REMOVE, MASK, HASH, PARTIAL)
+    assert set(STRICTEST_FIRST) == ACTIONS
+    assert len(STRICTEST_FIRST) == len(ACTIONS)

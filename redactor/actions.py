@@ -1,13 +1,14 @@
 """Redaction actions and value validators.
 
 Everything in this module is a pure function: text in, text out. It knows
-nothing about YAML, JSON or rule matching. Keeping the security-relevant
-transformations this small makes them easy to test and to reason about.
+nothing about YAML, JSON or rule matching, and it contains no rule names.
+Keeping the security-relevant transformations this small makes them easy to
+test and to reason about.
 
-Idempotency contract: every action returns its own output unchanged.
+Idempotency contract: an action applied to its own output changes nothing.
     mask     always returns the same constant.
     partial  keeps the length and the last characters, so a second pass is a no-op.
-    hash     recognises the tagged digest it produced earlier (see sha256_digest).
+    hash     depends on what triggered it, see sha256_digest.
     remove   leaves nothing behind to process again.
 """
 
@@ -21,7 +22,13 @@ HASH = "hash"
 REMOVE = "remove"
 ACTIONS = frozenset({MASK, PARTIAL, HASH, REMOVE})
 
-# Every hashed value is written as this tag followed by 64 lowercase hex digits.
+# Actions from strictest to most permissive, ordered by how much of the
+# original value they leave behind: nothing, a constant, a digest that can be
+# linked and guessed, real characters. When several value rules match
+# overlapping text, the strictest action is applied to all of it.
+STRICTEST_FIRST = (REMOVE, MASK, HASH, PARTIAL)
+
+# A digest produced for a key rule is this tag followed by 64 lowercase hex digits.
 HASH_TAG = "sha256:"
 _TAGGED_DIGEST = re.compile(r"sha256:[0-9a-f]{64}")
 
@@ -64,40 +71,48 @@ def partial(value: str, keep_last: int, fill: str) -> str:
     return fill * hidden + value[hidden:]
 
 
-def sha256_digest(value: str) -> str:
-    """Replace `value` with its tagged SHA-256 digest: "sha256:" + 64 hex digits.
+def sha256_digest(value: str, *, tagged: bool) -> str:
+    """Replace `value` with the SHA-256 digest of its UTF-8 bytes.
 
-    Why the tag: a key rule matches the *name* of a key, so on a second run the
-    same rule fires again and now sees the digest. The action must recognise
-    its own output or it would hash the hash and break idempotency. A bare
-    digest cannot be recognised safely, because a genuine API key can also be
-    exactly 64 hex characters, and treating that key as "already hashed" would
-    write it to the output in clear. The tag makes our output a distinct format.
+    The caller chooses the output form, because the two kinds of rule have
+    different idempotency problems:
 
-    A value is left untouched only if it is *exactly* a tagged digest. A bare
-    64-hex string, an upper-case digest, or a tagged digest with anything
-    appended is hashed like any other value.
+    tagged=True, for a key rule. Returns "sha256:" + 64 hex digits.
+        A key rule matches the *name* of a key, so on a second run it fires
+        again and now sees the digest. The action must recognise its own
+        output or it would hash the hash. A bare digest cannot be recognised
+        safely: a genuine API key can also be exactly 64 hex characters, and
+        treating it as "already hashed" would write it out in clear. The tag
+        makes our output a distinct format. A value is left untouched only if
+        it is *exactly* a tagged digest; a bare 64-hex string, an upper-case
+        digest or a tagged digest with anything appended is hashed normally.
+
+    tagged=False, for a value rule. Returns the bare 64 hex digits.
+        A value rule matches *content*. Its digest normally no longer matches
+        the pattern (a digest is not an e-mail address), so the rule does not
+        fire again and nothing needs recognising. No value is ever skipped.
+        This holds only while no value pattern in the rules file matches a
+        hex digest; a rules file is responsible for that.
 
     Security limitations (see the README for the full discussion):
-      * The tag is not authenticated. A value that already has this exact form
-        is passed through, so anyone can forge something that looks redacted.
+      * The tag is not authenticated. A value that already has the exact
+        tagged form passes through a key rule unchanged, so anyone can forge
+        something that looks redacted.
       * SHA-256 is unsalted and unkeyed. Equal inputs give equal digests (this
         is what allows correlation), and guessable inputs such as e-mail
         addresses can be recovered by hashing candidates and comparing.
 
     Args:
         value: The sensitive text.
-
-    Returns:
-        The tagged digest, or `value` itself when it already is one.
+        tagged: True for the tagged, self-recognising form; False for a bare digest.
     """
-    if _TAGGED_DIGEST.fullmatch(value):
+    if tagged and _TAGGED_DIGEST.fullmatch(value):
         return value
     # "surrogatepass": a JSON escape such as "\ud83d" decodes to a lone
     # surrogate, which strict UTF-8 refuses to encode. Hashing must never be
     # the reason a record cannot be processed.
-    data = value.encode("utf-8", "surrogatepass")
-    return HASH_TAG + hashlib.sha256(data).hexdigest()
+    digest = hashlib.sha256(value.encode("utf-8", "surrogatepass")).hexdigest()
+    return HASH_TAG + digest if tagged else digest
 
 
 def luhn_valid(text: str) -> bool:
@@ -140,7 +155,7 @@ def luhn_valid(text: str) -> bool:
 VALIDATORS = {"luhn": luhn_valid}
 
 
-def apply_action(action: str, value: str, settings: ActionSettings) -> str:
+def apply_action(action: str, value: str, settings: ActionSettings, *, tagged_hash: bool) -> str:
     """Return the text that replaces `value` under `action`.
 
     `remove` returns an empty string, which is exactly "delete the matched
@@ -151,6 +166,9 @@ def apply_action(action: str, value: str, settings: ActionSettings) -> str:
         action: One of ACTIONS.
         value: The sensitive text.
         settings: Parameters for mask and partial.
+        tagged_hash: Output form of `hash` (see sha256_digest): True when a
+            key rule triggered the action, False for a value rule. Ignored by
+            the other actions.
 
     Raises:
         ValueError: If `action` is not a known action. The rules loader rejects
@@ -161,7 +179,7 @@ def apply_action(action: str, value: str, settings: ActionSettings) -> str:
     if action == PARTIAL:
         return partial(value, settings.keep_last, settings.fill)
     if action == HASH:
-        return sha256_digest(value)
+        return sha256_digest(value, tagged=tagged_hash)
     if action == REMOVE:
         return ""
     raise ValueError(f"unknown action: {action!r}")
