@@ -3,3 +3,9 @@ BRIEF.md
 input.ndjson
 
 README.md
+
+# Python
+.venv/
+__pycache__/
+.pytest_cache/
+*.egg-info/
