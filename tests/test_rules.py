@@ -41,6 +41,7 @@ def test_provided_file_loads_with_all_rules_in_file_order(provided):
         "email",
         "jwt",
         "credit-card",
+        "credit-card-19-grouped",
         "api-key-prefix",
     )
     assert provided.settings == ActionSettings(mask_replacement="****", keep_last=4, fill="*")
@@ -56,6 +57,7 @@ def test_provided_actions_and_validator_are_resolved(provided):
 
     validators = {rule.name: rule.validator for rule in provided.value_rules}
     assert validators["credit-card"] is luhn_valid
+    assert validators["credit-card-19-grouped"] is luhn_valid
     assert validators["email"] is None
 
 

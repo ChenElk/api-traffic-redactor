@@ -908,6 +908,7 @@ def test_counts_are_per_rule_and_accumulate_across_records():
         "email": 3,
         "jwt": 0,
         "credit-card": 0,
+        "credit-card-19-grouped": 0,
         "api-key-prefix": 0,
     }
 

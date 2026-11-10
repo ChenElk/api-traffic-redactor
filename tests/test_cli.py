@@ -114,15 +114,16 @@ def test_stderr_holds_only_the_summary(sample_run):
     assert stderr_text(sample_run).splitlines() == [
         "redactor: 50 lines: 45 processed, 2 blank, 3 replaced (invalid_json: 3)",
         "redactor: redactions by rule:",
-        "  auth-headers        9",
-        "  api-key-names       8",
-        "  secret-fields       10",
-        "  card-number-fields  5",
-        "  cvv-fields          1",
-        "  email               31",
-        "  jwt                 4",
-        "  credit-card         13",
-        "  api-key-prefix      2",
+        "  auth-headers            9",
+        "  api-key-names           8",
+        "  secret-fields           10",
+        "  card-number-fields      5",
+        "  cvv-fields              1",
+        "  email                   31",
+        "  jwt                     4",
+        "  credit-card             17",
+        "  credit-card-19-grouped  0",
+        "  api-key-prefix          2",
     ]
 
 
@@ -189,7 +190,7 @@ def test_many_replaced_lines_add_nothing_to_stderr():
     lines = text.splitlines()
     assert lines[0] == "redactor: 30 lines: 5 processed, 0 blank, 25 replaced (invalid_json: 25)"
     assert lines[1] == "redactor: redactions by rule:"
-    assert len(lines) == 2 + 9
+    assert len(lines) == 2 + 10
     assert "hunter2" not in text and "erin" not in text and "line " not in text
     assert process.returncode == EXIT_RECORDS_REPLACED
 

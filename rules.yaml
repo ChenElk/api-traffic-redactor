@@ -53,8 +53,30 @@ value_rules:
     pattern: 'eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]*'
     action: mask
 
+  # Card numbers. The structure decides where a number starts and ends, the
+  # Luhn check decides whether it is a card. Neither is enough on its own.
+  #   digits only   13 to 19 digits (the provided pattern)
+  #   4-4-4-4       16 digits: Visa, Mastercard, Discover
+  #   4-6-5         15 digits: American Express
+  #   4-6-4         14 digits: Diners Club
+  # Groups are separated by one space or one hyphen.
+  #
+  # There is deliberately no guard against text that looks like the tool's
+  # own output (a run of "*" before the digits). Such a guard would leave a
+  # real card readable whenever the input happens to look that way. The price
+  # is a rare case in which a second run redacts more: see the README.
   - name: credit-card
-    pattern: '\b\d{13,19}\b'
+    pattern: '\b(?:\d{13,19}|\d{4}[ -]\d{4}[ -]\d{4}[ -]\d{4}|\d{4}[ -]\d{6}[ -]\d{5}|\d{4}[ -]\d{6}[ -]\d{4})\b'
+    validator: luhn
+    action: partial
+
+  # 4-4-4-4-3: a 19-digit card written in groups. It is a rule of its own
+  # because "4111 1111 1111 1111 123" can be read in two ways: as one 19-digit
+  # number, or as a 16-digit card followed by its CVV. A rule tries one
+  # reading at each position, so each reading is a rule and Luhn decides
+  # between them. If both pass, the engine merges them into one redaction.
+  - name: credit-card-19-grouped
+    pattern: '\b\d{4}[ -]\d{4}[ -]\d{4}[ -]\d{4}[ -]\d{3}\b'
     validator: luhn
     action: partial
 
