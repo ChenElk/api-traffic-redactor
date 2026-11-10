@@ -1,0 +1,3 @@
+# NDJSON samples are test fixtures: store and check them out byte for byte.
+# Without this, Git on Windows rewrites their line endings to CRLF.
+*.ndjson -text
