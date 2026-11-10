@@ -120,7 +120,7 @@ def test_stderr_holds_only_the_summary(sample_run):
         "  card-number-fields  5",
         "  cvv-fields          1",
         "  email               31",
-        "  jwt                 2",
+        "  jwt                 4",
         "  credit-card         13",
         "  api-key-prefix      2",
     ]

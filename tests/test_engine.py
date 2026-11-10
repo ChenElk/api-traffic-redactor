@@ -1,8 +1,8 @@
 """Unit tests for the redaction engine (one JSON record in, one out).
 
-Most tests use the rules.yaml shipped with the assignment, exactly as provided.
-Its known pattern problems (JWT alphabet, card numbers with separators) are
-investigated separately, so nothing here depends on them.
+Most tests use the project's rules.yaml. They check how rules are applied, not
+what the patterns detect: the JWT and card-number patterns have their own
+tests in test_detection_patterns.py.
 """
 
 import itertools
