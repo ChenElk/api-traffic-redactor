@@ -1,0 +1,50 @@
+# An alternative rule set, used only by the tests.
+# It shares no rule name, field name, pattern or setting with the rules.yaml
+# of the assignment, to show that the engine is driven by the file alone.
+version: 1
+
+settings:
+  mask:    { replacement: "[REDACTED]" }
+  partial: { keep_last: 2, fill: "#" }
+
+key_rules:
+  - name: device-headers
+    scope: headers
+    match:
+      exact: [X-Device-Token, X-Session-Id]
+    action: hash
+
+  - name: national-id
+    scope: body
+    match:
+      regex: '(?i)^(ssn|national_id)$'
+    action: partial
+
+  - name: diagnosis
+    scope: any
+    match:
+      exact: [diagnosis]
+    action: remove
+
+  - name: pin-code
+    scope: body
+    match:
+      regex: '^pin(_code)?$'
+    action: mask
+
+value_rules:
+  - name: ipv4-address
+    pattern: '\b(?:\d{1,3}\.){3}\d{1,3}\b'
+    action: hash
+
+  - name: us-phone
+    pattern: '\+1 \(\d{3}\) \d{3}-\d{4}'
+    action: mask
+
+  - name: license-plate
+    pattern: '\b[A-Z]{3}-\d{4}\b'
+    action: partial
+
+  - name: ticket-reference
+    pattern: 'TICKET-\d+'
+    action: remove
