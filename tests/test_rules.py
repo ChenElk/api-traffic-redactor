@@ -439,6 +439,99 @@ def test_invalid_rules_are_rejected(case):
         rules_from(body)
 
 
+# PyYAML alone keeps the last of two equal keys without complaint, so each of
+# these would load as a different rule set than the one a reader sees.
+DUPLICATE_KEYS = {
+    "action given twice in a rule": (
+        """
+        value_rules:
+          - name: email
+            pattern: '@'
+            action: mask
+            action: hash
+        """,
+        "action",
+    ),
+    "scope given twice in a key rule": (
+        """
+        key_rules:
+          - name: k
+            scope: headers
+            scope: any
+            match: { exact: [token] }
+            action: mask
+        """,
+        "scope",
+    ),
+    "matcher given twice in an inline mapping": (
+        """
+        key_rules:
+          - name: k
+            scope: any
+            match: { exact: [token], exact: [password] }
+            action: mask
+        """,
+        "exact",
+    ),
+    "section given twice at the top level": (
+        """
+        value_rules:
+          - name: email
+            pattern: '@'
+            action: hash
+        value_rules:
+          - name: other
+            pattern: 'x'
+            action: mask
+        """,
+        "value_rules",
+    ),
+    "setting given twice": (
+        "settings: { partial: { keep_last: 4, keep_last: 0 } }" + VALID_VALUE_RULE,
+        "keep_last",
+    ),
+}
+
+
+@pytest.mark.parametrize("case", DUPLICATE_KEYS)
+def test_duplicate_yaml_key_is_rejected(case):
+    body, duplicated_key = DUPLICATE_KEYS[case]
+    with pytest.raises(RulesError) as error:
+        rules_from(body)
+    message = str(error.value)
+    assert "duplicate key" in message
+    assert repr(duplicated_key) in message
+    # The position helps whoever edits the file find the second occurrence.
+    assert "line" in message
+
+
+def test_duplicate_version_key_is_rejected():
+    with pytest.raises(RulesError, match="duplicate key 'version'"):
+        parse_rules("version: 1\nversion: 1" + VALID_VALUE_RULE)
+
+
+def test_same_key_in_different_rules_is_not_a_duplicate():
+    # Uniqueness is per mapping: every rule has its own `name` and `action`.
+    rules = rules_from(
+        """
+        value_rules:
+          - name: first
+            pattern: 'a'
+            action: mask
+          - name: second
+            pattern: 'b'
+            action: mask
+        """
+    )
+    assert rules.rule_names == ("first", "second")
+
+
+def test_unhashable_yaml_key_is_a_rules_error_not_a_crash():
+    # `? [a, b]` is YAML for a key that is a list.
+    with pytest.raises(RulesError, match="not valid YAML"):
+        parse_rules("version: 1\n? [a, b]\n: value\n")
+
+
 def test_error_message_names_the_offending_rule():
     with pytest.raises(RulesError) as error:
         rules_from(

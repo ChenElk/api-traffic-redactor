@@ -38,6 +38,38 @@ class RulesError(Exception):
     """The rules file is missing, unreadable or invalid."""
 
 
+class _UniqueKeyLoader(yaml.SafeLoader):
+    """SafeLoader that refuses a mapping in which the same key appears twice.
+
+    PyYAML keeps the last value and says nothing, so a rule written with two
+    `action:` lines would load with whichever came second. An ambiguous rules
+    file must be rejected, not resolved by accident.
+
+    Subclassing SafeLoader keeps its guarantee: only plain data (dict, list,
+    str, int, ...) is built, never arbitrary Python objects.
+    """
+
+    def construct_mapping(self, node, deep=False):
+        seen = set()
+        for key_node, _value_node in node.value:
+            key = self.construct_object(key_node, deep=deep)
+            try:
+                duplicate = key in seen
+            except TypeError:
+                # An unhashable key (a list, say). SafeLoader reports that
+                # itself in the call below, with a proper position.
+                break
+            if duplicate:
+                raise yaml.constructor.ConstructorError(
+                    "while reading a mapping",
+                    node.start_mark,
+                    f"found duplicate key {key!r}",
+                    key_node.start_mark,
+                )
+            seen.add(key)
+        return super().construct_mapping(node, deep=deep)
+
+
 @dataclass(frozen=True)
 class KeyRule:
     """A rule that selects values by the *name* of their JSON key or HTTP header.
@@ -139,9 +171,9 @@ def parse_rules(text: str) -> RuleSet:
         RulesError: If the text is not valid YAML or not a valid rules file.
     """
     try:
-        # safe_load builds only plain data (dict, list, str, int, ...).
-        # yaml.load can construct arbitrary Python objects from the file.
-        document = yaml.safe_load(text)
+        # Never plain yaml.load with the default loader: it can construct
+        # arbitrary Python objects from the file. Our loader is a SafeLoader.
+        document = yaml.load(text, Loader=_UniqueKeyLoader)
     except yaml.YAMLError as exc:
         raise RulesError(f"rules file is not valid YAML: {exc}") from exc
 
