@@ -196,6 +196,27 @@ def test_every_replaced_line_is_reported_without_its_content():
     assert reports == [(20, "invalid_json"), (21, "invalid_json"), (50, "invalid_json")]
 
 
+def test_output_that_cannot_be_encoded_is_replaced_and_the_stream_goes_on():
+    # The real engine escapes lone surrogates, so its output can always be
+    # written as UTF-8. If a future change broke that promise, the line must
+    # still fail closed instead of stopping the stream with an exception.
+    class UnencodableRedactor:
+        counts = Counter()
+
+        def redact(self, line):
+            if "odd" in line:
+                return '{"odd":"\ud83d","secret":"hunter2"}'  # half of an emoji
+            return line
+
+    stream = RedactionStream(UnencodableRedactor())
+    output = stream.feed(b'{"a":1}\n{"odd":1}\n{"b":2}\n') + stream.finish()
+
+    assert output_lines(output) == [b'{"a":1}', placeholder(REASON_INTERNAL_ERROR, 2), b'{"b":2}']
+    assert b"hunter2" not in output
+    assert stream.stats.replaced == Counter({REASON_INTERNAL_ERROR: 1})
+    assert stream.stats.processed == 2
+
+
 # --- line endings, blank lines, BOM, last line --------------------------------
 
 

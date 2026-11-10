@@ -6,8 +6,10 @@ object for a file, for stdin and for an HTTP request body: the caller only
 moves bytes.
 
 Guarantees:
-  * Bounded memory. Only the line currently being assembled is held, and
-    never more than `max_line_bytes` of it.
+  * Bounded memory. Between calls only the line being assembled is held, and
+    never more than `max_line_bytes` of it. During a call the chunk and its
+    output exist as well, so the caller sets the bound by the size of the
+    chunks it passes: see RedactionStream.feed.
   * One output line for every input line, in the same order. Output line N
     always corresponds to input line N.
   * Fail closed. A line that cannot be redacted safely is replaced by a
@@ -61,8 +63,9 @@ class StreamStats:
 class RedactionStream:
     """Redacts NDJSON incrementally.
 
-    Use it like zlib's compressobj: call feed() with each chunk of input and
-    write what it returns, then call finish() once and write that too.
+    Use it like zlib's compressobj: read the input in chunks of a fixed size,
+    call feed() with each chunk and write what it returns before reading the
+    next one, then call finish() once and write that too.
 
     Args:
         redactor: The engine. Its `counts` hold the redactions per rule.
@@ -99,6 +102,15 @@ class RedactionStream:
 
         A chunk may end anywhere, including in the middle of a line or of a
         multi-byte character. The unfinished part is kept for the next call.
+
+        Memory: the output for the whole chunk is returned at once, so it is
+        the caller who bounds the memory, by the size of the chunks it passes.
+        Pass pieces of a fixed size (the CLI reads 64 KiB at a time) and write
+        each result before reading more. Never pass a whole file or a whole
+        HTTP request body in one call: all of its output would be held in
+        memory. The output can be several times larger than the input, since
+        a short value may become a 64-character digest and a short broken
+        line a longer placeholder.
         """
         output = []
         start = 0
@@ -163,6 +175,13 @@ class RedactionStream:
             return self._placeholder(number, REASON_INVALID_UTF8)
         try:
             redacted = self._redactor.redact(text)
+            if redacted is text:
+                # Nothing was redacted: write the bytes exactly as they came.
+                return line
+            # The engine escapes what UTF-8 cannot represent, so this should
+            # never fail. It is inside the `try` all the same: if it ever
+            # does, this line gets a placeholder and the stream goes on.
+            return redacted.encode("utf-8")
         except RecordError as error:
             return self._placeholder(number, error.reason)
         except Exception:  # noqa: BLE001 - deliberate catch-all, see below
@@ -170,11 +189,6 @@ class RedactionStream:
             # line through. The exception is deliberately not logged: Python
             # error messages often quote the value that caused them.
             return self._placeholder(number, REASON_INTERNAL_ERROR)
-
-        if redacted is text:
-            # Nothing was redacted: write the bytes exactly as they came.
-            return line
-        return redacted.encode("utf-8")
 
     def _placeholder(self, number: int, reason: str) -> bytes:
         """Record that line `number` was replaced and return what is written instead.
