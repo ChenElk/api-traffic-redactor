@@ -18,7 +18,6 @@ Exit codes:
 """
 
 import argparse
-import os
 import sys
 
 from redactor.engine import Redactor
@@ -58,9 +57,17 @@ def main(argv: list[str] | None = None) -> int:
     except OSError as error:
         # An OSError message names the file and the system error, never the data.
         _say(f"input/output error: {error}")
-        _silence_stdout()
+        # If the output is what failed (`redactor big.ndjson | head`: the
+        # reader went away), Python would try to flush stdout again at exit,
+        # print that second error and turn the exit code into 120. Closing
+        # stdout here, and ignoring that it fails once more, prevents both.
+        try:
+            sys.stdout.close()
+        except OSError:
+            pass
         return EXIT_IO_ERROR
 
+    # _copy has flushed stdout, so the summary always follows the last record.
     _print_summary(stream, redactor)
     return EXIT_RECORDS_REPLACED if stream.stats.replaced else EXIT_OK
 
@@ -148,17 +155,3 @@ def _print_summary(stream: RedactionStream, redactor: Redactor) -> None:
 
 def _say(message: str) -> None:
     print(f"redactor: {message}", file=sys.stderr)
-
-
-def _silence_stdout() -> None:
-    """Point stdout at the null device after a failed write.
-
-    When the reader of a pipe has gone away (`redactor big.ndjson | head`),
-    Python would try to flush stdout once more at exit and print a second,
-    confusing error. This is the remedy the Python documentation recommends.
-    """
-    try:
-        devnull = os.open(os.devnull, os.O_WRONLY)
-        os.dup2(devnull, sys.stdout.fileno())
-    except (OSError, ValueError):
-        pass

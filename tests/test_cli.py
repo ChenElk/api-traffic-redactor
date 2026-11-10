@@ -230,6 +230,34 @@ def test_exit_code_1_when_the_input_file_cannot_be_read():
     assert "input/output error" in stderr_text(process)
 
 
+def test_a_reader_that_goes_away_ends_the_run_with_exit_code_1(tmp_path):
+    # `redactor big.ndjson | head -1`: the reader closes the pipe while the
+    # tool still has most of its output to write.
+    record = b'{"user":"dana@example.com","body":{"password":"hunter2"}}\n'
+    big = tmp_path / "big.ndjson"
+    big.write_bytes(record * 20_000)  # over 1 MB, far more than a pipe holds
+
+    with subprocess.Popen(
+        [sys.executable, "-m", "redactor", str(big)],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        cwd=ROOT,
+    ) as process:
+        first_line = process.stdout.readline()
+        process.stdout.close()  # the reader goes away
+        errors = process.stderr.read().decode("utf-8")
+
+    assert first_line == expected_output(record)
+    assert process.returncode == EXIT_IO_ERROR
+    # One plain message. Without care Python reports the failed flush a
+    # second time at exit and changes the exit code to 120.
+    lines = errors.splitlines()
+    assert len(lines) == 1 and lines[0].startswith("redactor: input/output error:")
+    assert "Traceback" not in errors
+    for fragment in INPUT_FRAGMENTS:
+        assert fragment not in errors
+
+
 @pytest.mark.parametrize(
     "arguments",
     [
