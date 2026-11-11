@@ -38,9 +38,9 @@ LAST_CHUNK = b"0\r\n\r\n"
 DISCONNECTED = "connection closed before the request ended"
 
 
-def expected_output(data: bytes, max_line_bytes: int = DEFAULT_MAX_LINE_BYTES) -> bytes:
+def expected_output(data: bytes) -> bytes:
     """What the stream produces in-process for the same input."""
-    stream = RedactionStream(Redactor(RULES), max_line_bytes)
+    stream = RedactionStream(Redactor(RULES))
     return stream.feed(data) + stream.finish()
 
 
@@ -283,6 +283,18 @@ def test_a_broken_line_is_replaced_and_the_status_stays_200(service):
         b"",
     ]
     assert b"hunter2" not in body
+
+
+def test_a_line_over_one_mebibyte_is_replaced_and_the_limit_itself_is_allowed(service):
+    # The filler is spaces: letters would hit the e-mail pattern's backtracking.
+    at_limit = b'{"k":"' + b" " * (DEFAULT_MAX_LINE_BYTES - 8) + b'"}'
+    over_limit = b'{"password":"over-limit-secret","k":"' + b" " * DEFAULT_MAX_LINE_BYTES + b'"}'
+    data = at_limit + b"\n" + over_limit + b"\n" + RECORD
+    status, _, body = request(service.port, "POST", "/redact", body=data)
+    assert status == 200
+    assert body == at_limit + b'\n{"redactor_error":"line_too_long","line":2}\n' + REDACTED_RECORD
+    # Nothing of the discarded line is passed on.
+    assert b"over-limit-secret" not in body
 
 
 # --- paths and methods --------------------------------------------------------
@@ -718,17 +730,16 @@ def test_the_default_address_is_port_8080_on_every_interface():
     assert _build_parser().parse_args(["--serve"]).addr == ("0.0.0.0", 8080)
 
 
-def test_max_line_bytes_applies_to_the_service(tmp_path):
-    limited = Service(tmp_path, "--max-line-bytes", "300")
-    try:
-        assert limited.wait_until_up(), limited.log()
-        status, _, body = request(limited.port, "POST", "/redact", body=SAMPLE)
-        assert status == 200
-        # Line 1 of the sample is 551 bytes long.
-        assert body.split(b"\n")[0] == b'{"redactor_error":"line_too_long","line":1}'
-        assert body == expected_output(SAMPLE, max_line_bytes=300)
-    finally:
-        limited.stop()
+def test_the_line_limit_is_not_a_service_option():
+    process = subprocess.run(
+        [sys.executable, "-m", "redactor", "--serve", "--addr", f"{HOST}:{free_port()}", "--max-line-bytes", "300"],
+        capture_output=True,
+        cwd=ROOT,
+        timeout=60,
+    )
+    assert process.returncode == EXIT_USAGE
+    assert process.stdout == b""
+    assert b"unrecognized arguments: --max-line-bytes" in process.stderr
 
 
 def test_a_stop_signal_lets_the_request_in_progress_finish(tmp_path):

@@ -62,10 +62,11 @@ def main(argv: list[str] | None = None) -> int:
         return EXIT_USAGE
 
     if args.serve:
-        return _serve(rules, args.addr, args.max_line_bytes)
+        return _serve(rules, args.addr)
 
     redactor = Redactor(rules)
-    stream = RedactionStream(redactor, args.max_line_bytes)
+    # The line limit is fixed at 1 MiB in both modes; it is not an option.
+    stream = RedactionStream(redactor, DEFAULT_MAX_LINE_BYTES)
     try:
         _copy(args.input, stream)
     except OSError as error:
@@ -103,14 +104,6 @@ def _build_parser() -> argparse.ArgumentParser:
         help="rules file (default: %(default)s)",
     )
     parser.add_argument(
-        "--max-line-bytes",
-        type=_positive_int,
-        default=DEFAULT_MAX_LINE_BYTES,
-        metavar="N",
-        help="longest line that is processed; longer lines are replaced "
-        "by a placeholder (default: %(default)s)",
-    )
-    parser.add_argument(
         "--serve",
         action="store_true",
         help="run as an HTTP service (POST /redact, GET /healthz) instead of reading input",
@@ -125,16 +118,6 @@ def _build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _positive_int(text: str) -> int:
-    try:
-        value = int(text)
-    except ValueError:
-        value = 0
-    if value < 1:
-        raise argparse.ArgumentTypeError("must be a whole number greater than 0")
-    return value
-
-
 def _address(text: str) -> tuple[str, int]:
     """Parse `HOST:PORT`, or `:PORT` for every interface, into (host, port)."""
     host, colon, port = text.rpartition(":")
@@ -144,7 +127,7 @@ def _address(text: str) -> tuple[str, int]:
     return host.strip("[]") or "0.0.0.0", int(port)
 
 
-def _serve(rules: RuleSet, address: tuple[str, int], max_line_bytes: int) -> int:
+def _serve(rules: RuleSet, address: tuple[str, int]) -> int:
     """Run the HTTP service until it is stopped; return the exit code."""
     # Imported here so that plain file mode does not load the web framework.
     from redactor import server
@@ -160,7 +143,7 @@ def _serve(rules: RuleSet, address: tuple[str, int], max_line_bytes: int) -> int
 
     host, port = address
     try:
-        server.run(rules, host, port, max_line_bytes)
+        server.run(rules, host, port, DEFAULT_MAX_LINE_BYTES)
     except KeyboardInterrupt:
         pass
     except SystemExit:

@@ -16,7 +16,7 @@ import pytest
 from redactor.cli import EXIT_IO_ERROR, EXIT_OK, EXIT_RECORDS_REPLACED, EXIT_USAGE
 from redactor.engine import Redactor
 from redactor.rules import load_rules
-from redactor.stream import RedactionStream
+from redactor.stream import DEFAULT_MAX_LINE_BYTES, RedactionStream
 
 ROOT = Path(__file__).resolve().parent.parent
 SAMPLE = (ROOT / "input.ndjson").read_bytes()
@@ -47,6 +47,15 @@ def expected_output(data: bytes) -> bytes:
     """What the stream produces in-process, with the provided rules."""
     stream = RedactionStream(Redactor(load_rules(ROOT / "rules.yaml")))
     return stream.feed(data) + stream.finish()
+
+
+def json_line_of_length(length: int) -> bytes:
+    """A valid JSON record that is exactly `length` bytes long.
+
+    The filler is spaces on purpose: a megabyte of letters would send the
+    provided e-mail pattern into quadratic backtracking (see test_stream.py).
+    """
+    return b'{"k":"' + b" " * (length - 8) + b'"}'
 
 
 @pytest.fixture(scope="module")
@@ -196,14 +205,16 @@ def test_many_replaced_lines_add_nothing_to_stderr():
 
 
 def test_the_summary_counts_replaced_lines_per_reason():
+    too_long = json_line_of_length(DEFAULT_MAX_LINE_BYTES + 1)  # one byte over the limit
     data = (
         b"not json\n"
         b'{"name":"caf\xe9"}\n'  # 0xE9 alone is Latin-1, not UTF-8
-        b'{"k":"' + b" " * 400 + b'"}\n'  # longer than the limit below
+        + too_long
+        + b"\n"
         b"also not json\n"
         b'{"a":1}\n'
     )
-    process = run_cli("--max-line-bytes", "300", stdin=data)
+    process = run_cli(stdin=data)
     assert stderr_text(process).splitlines()[0] == (
         "redactor: 5 lines: 1 processed, 0 blank, 4 replaced "
         "(invalid_json: 2, invalid_utf8: 1, line_too_long: 1)"
@@ -263,8 +274,6 @@ def test_a_reader_that_goes_away_ends_the_run_with_exit_code_1(tmp_path):
     "arguments",
     [
         ["--no-such-option"],
-        ["--max-line-bytes", "0"],
-        ["--max-line-bytes", "many"],
         ["one.ndjson", "two.ndjson"],
     ],
 )
@@ -315,17 +324,37 @@ def test_a_different_rules_file_changes_what_is_redacted():
     assert "auth-headers" not in stderr_text(process)
 
 
-# --- options ------------------------------------------------------------------
+# --- the line limit -----------------------------------------------------------
 
 
-def test_max_line_bytes_replaces_longer_lines():
-    process = run_cli("--max-line-bytes", "300", "input.ndjson")
-    lines = process.stdout.split(b"\n")
-    # Line 1 of the sample is 551 bytes long, line 4 is 206.
-    assert lines[0] == b'{"redactor_error":"line_too_long","line":1}'
-    assert lines[3] == SAMPLE.split(b"\n")[3]
+def test_a_line_over_one_mebibyte_is_replaced_and_the_limit_itself_is_allowed():
+    at_limit = json_line_of_length(DEFAULT_MAX_LINE_BYTES)
+    over_limit = b'{"password":"hunter2","k":"' + b" " * DEFAULT_MAX_LINE_BYTES + b'"}'
+    process = run_cli(stdin=at_limit + b"\n" + over_limit + b"\n" + b'{"password":"x"}\n')
+    assert process.stdout.split(b"\n") == [
+        at_limit,
+        b'{"redactor_error":"line_too_long","line":2}',
+        b'{"password":"****"}',
+        b"",
+    ]
+    # Nothing of the discarded line is passed on.
+    assert b"hunter2" not in process.stdout
     assert process.returncode == EXIT_RECORDS_REPLACED
-    assert "line_too_long" in stderr_text(process)
+    assert "3 lines: 2 processed, 0 blank, 1 replaced (line_too_long: 1)" in stderr_text(process)
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        ["--max-line-bytes", "300"],
+        ["--max-line-bytes=300", "input.ndjson"],
+    ],
+)
+def test_the_line_limit_is_not_a_command_line_option(arguments):
+    process = run_cli(*arguments, stdin=SAMPLE)
+    assert process.returncode == EXIT_USAGE
+    assert process.stdout == b""
+    assert "unrecognized arguments: --max-line-bytes" in stderr_text(process)
 
 
 # --- the installed command ----------------------------------------------------
