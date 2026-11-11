@@ -7,7 +7,15 @@ name = "api-traffic-redactor"
 version = "0.1.0"
 description = "Redacts sensitive data from NDJSON API traffic logs using YAML-defined rules."
 requires-python = ">=3.11"
-dependencies = ["PyYAML>=6.0"]
+dependencies = [
+    "PyYAML>=6.0",
+    # The HTTP service (`redactor --serve`). Pinned to the versions it was
+    # tested with: the streaming response in redactor/server.py speaks ASGI
+    # directly, and its behaviour was verified against exactly these.
+    "fastapi==0.162.4",
+    "starlette==1.10.0",
+    "uvicorn==0.54.0",
+]
 
 [project.optional-dependencies]
 dev = ["pytest>=8"]
