@@ -1,0 +1,8 @@
+# Only what the image needs is sent to the build. Everything else (the git
+# history, the local virtual environment, tests, sample input, any output
+# file) stays out of the build context and therefore out of the image.
+*
+!pyproject.toml
+!rules.yaml
+!redactor/
+**/__pycache__/
