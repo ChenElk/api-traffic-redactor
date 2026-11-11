@@ -1,11 +1,12 @@
 """Unit tests for loading, validating and matching the redaction rules."""
 
+import itertools
 from pathlib import Path
 from textwrap import dedent
 
 import pytest
 
-from redactor.actions import ActionSettings, luhn_valid
+from redactor.actions import ACTIONS, STRICTEST_FIRST, ActionSettings, luhn_valid
 from redactor.rules import (
     SCOPE_BODY,
     SCOPE_HEADERS,
@@ -103,21 +104,98 @@ def test_key_rule_lookup_on_the_provided_rules(provided, key_name, scope, expect
     assert (rule.name if rule else None) == expected_rule
 
 
-def test_first_matching_key_rule_wins():
+# --- several key rules matching the same key ----------------------------------
+
+
+def key_rules_on_token(*specs):
+    """Key rules that all match the key `token`, from (name, action) pairs in file order."""
+    lines = ["version: 1", "key_rules:"]
+    for name, action in specs:
+        lines += [
+            f"  - name: {name}",
+            "    scope: any",
+            "    match: { exact: [token] }",
+            f"    action: {action}",
+        ]
+    return parse_rules("\n".join(lines) + "\n")
+
+
+@pytest.mark.parametrize(
+    ("stricter", "weaker"), list(itertools.combinations(STRICTEST_FIRST, 2))
+)
+def test_the_strictest_matching_key_rule_wins_whatever_the_order_in_the_file(stricter, weaker):
+    # All six pairs of actions, each in both orders: remove beats mask, hash
+    # and partial; mask beats hash and partial; hash beats partial.
+    for first, second in [(stricter, weaker), (weaker, stricter)]:
+        rules = key_rules_on_token((f"{first}-rule", first), (f"{second}-rule", second))
+        assert rules.find_key_rule("token", SCOPE_BODY).name == f"{stricter}-rule"
+
+
+@pytest.mark.parametrize("action", sorted(ACTIONS))
+def test_equally_strict_key_rules_are_decided_by_the_order_in_the_file(action):
+    rules = key_rules_on_token(("first", action), ("second", action))
+    assert rules.find_key_rule("token", SCOPE_BODY).name == "first"
+
+
+def test_the_first_of_the_strictest_key_rules_wins_among_more_than_two():
+    rules = key_rules_on_token(
+        ("weak", "partial"), ("first-mask", "mask"), ("middle", "hash"), ("second-mask", "mask")
+    )
+    assert rules.find_key_rule("token", SCOPE_BODY).name == "first-mask"
+
+
+def test_the_kind_of_matcher_does_not_matter_for_the_choice():
     rules = rules_from(
         """
         key_rules:
-          - name: first
+          - name: by-regex
             scope: any
             match: { regex: '^token$' }
             action: hash
-          - name: second
+          - name: by-exact-name
             scope: any
             match: { exact: [token] }
             action: mask
         """
     )
-    assert rules.find_key_rule("token", SCOPE_BODY).name == "first"
+    assert rules.find_key_rule("token", SCOPE_BODY).name == "by-exact-name"
+
+
+def test_a_stricter_key_rule_of_another_scope_does_not_take_part():
+    # Only rules that match the key *in this scope* compete.
+    rules = rules_from(
+        """
+        key_rules:
+          - name: mask-in-bodies
+            scope: body
+            match: { exact: [token] }
+            action: mask
+          - name: remove-in-headers
+            scope: headers
+            match: { exact: [token] }
+            action: remove
+        """
+    )
+    assert rules.find_key_rule("token", SCOPE_BODY).name == "mask-in-bodies"
+    assert rules.find_key_rule("token", SCOPE_HEADERS).name == "remove-in-headers"
+
+
+def test_a_stricter_key_rule_that_does_not_match_the_name_does_not_take_part():
+    rules = rules_from(
+        """
+        key_rules:
+          - name: mask-token
+            scope: any
+            match: { exact: [token] }
+            action: mask
+          - name: remove-cvv
+            scope: any
+            match: { exact: [cvv] }
+            action: remove
+        """
+    )
+    assert rules.find_key_rule("token", SCOPE_BODY).name == "mask-token"
+    assert rules.find_key_rule("other", SCOPE_BODY) is None
 
 
 def test_key_regex_without_anchors_matches_inside_the_name():

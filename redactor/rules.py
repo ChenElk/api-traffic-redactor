@@ -17,7 +17,7 @@ from pathlib import Path
 
 import yaml
 
-from redactor.actions import ACTIONS, VALIDATORS, ActionSettings
+from redactor.actions import ACTIONS, STRICTEST_FIRST, VALIDATORS, ActionSettings
 
 SCOPE_HEADERS = "headers"
 SCOPE_BODY = "body"
@@ -134,16 +134,19 @@ class RuleSet:
     value_rules: tuple[ValueRule, ...]
 
     def find_key_rule(self, key_name: str, scope: str) -> KeyRule | None:
-        """Return the first key rule matching `key_name` in `scope`, or None.
+        """Return the key rule that applies to `key_name` in `scope`, or None.
 
-        File order decides between several matching rules: the first one wins,
-        like firewall rules. That keeps the outcome predictable from reading
-        the file top to bottom.
+        If several rules match, the one with the strictest action wins
+        (remove, mask, hash, partial: see actions.STRICTEST_FIRST), whatever
+        their order in the file. Overlapping value-rule matches are settled
+        the same way: when two rules disagree, the value is never left more
+        readable than the stricter one allows. Between rules with the same
+        action, the one listed first in the file wins.
         """
-        for rule in self.key_rules:
-            if rule.matches(key_name, scope):
-                return rule
-        return None
+        matching = [rule for rule in self.key_rules if rule.matches(key_name, scope)]
+        # min() returns the first of several equally strict rules, so the
+        # order in the file breaks ties.
+        return min(matching, key=lambda rule: STRICTEST_FIRST.index(rule.action), default=None)
 
     @property
     def rule_names(self) -> tuple[str, ...]:

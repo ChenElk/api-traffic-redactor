@@ -210,6 +210,105 @@ def test_key_rule_takes_precedence_over_value_rules():
     assert redactor.counts["api-key-prefix"] == 0
 
 
+# --- several key rules matching the same key ----------------------------------
+# The strictest action wins (remove, mask, hash, partial), as for overlapping
+# value rules. Which rule is chosen is tested in test_rules.py; these tests
+# check what the engine then writes and counts.
+
+
+def test_remove_wins_over_an_earlier_mask_rule_on_the_same_key():
+    rules = rules_from(
+        """
+        key_rules:
+          - name: mask-token
+            scope: any
+            match: { exact: [token] }
+            action: mask
+          - name: drop-token
+            scope: any
+            match: { regex: '(?i)^token$' }
+            action: remove
+        """
+    )
+    redactor = Redactor(rules)
+    line = '{"headers":{"Token":"h"},"body":{"token":"hunter2","list":[{"token":"t"}],"a":1}}'
+    assert redactor.redact(line) == '{"headers":{},"body":{"list":[{}],"a":1}}'
+    # Counted under the rule that was applied, once per key.
+    assert redactor.counts == {"mask-token": 0, "drop-token": 3}
+    # The same choice is made for a form field and a query string.
+    assert redact('{"body":"token=hunter2&x=1","path":"/cb?token=abc"}', rules) == (
+        '{"body":"x=1","path":"/cb?"}'
+    )
+
+
+def test_hash_wins_over_an_earlier_partial_rule_on_the_same_key():
+    rules = rules_from(
+        """
+        key_rules:
+          - name: partial-pan
+            scope: body
+            match: { exact: [pan] }
+            action: partial
+          - name: hash-pan
+            scope: body
+            match: { exact: [pan] }
+            action: hash
+        """
+    )
+    redactor = Redactor(rules)
+    first = redactor.redact('{"body":{"pan":"4111111111111111"}}')
+    assert json.loads(first)["body"]["pan"] == key_digest("4111111111111111")
+    assert redactor.counts == {"partial-pan": 0, "hash-pan": 1}
+    assert redact(first, rules) is first
+
+
+def test_two_equally_strict_key_rules_are_applied_and_counted_as_the_first_in_the_file():
+    rules = rules_from(
+        """
+        settings:
+          mask: { replacement: "[hidden]" }
+        key_rules:
+          - name: listed-first
+            scope: any
+            match: { exact: [token] }
+            action: mask
+          - name: listed-second
+            scope: any
+            match: { regex: '^token$' }
+            action: mask
+        """
+    )
+    redactor = Redactor(rules)
+    assert redactor.redact('{"body":{"token":"hunter2"}}') == '{"body":{"token":"[hidden]"}}'
+    assert redactor.counts == {"listed-first": 1, "listed-second": 0}
+
+
+def test_the_chosen_key_rule_still_takes_precedence_over_value_rules():
+    # Strictness decides between key rules only. A value rule does not take
+    # part, even when its action (remove) is stricter than every key rule.
+    rules = rules_from(
+        r"""
+        key_rules:
+          - name: partial-contact
+            scope: body
+            match: { exact: [contact] }
+            action: partial
+          - name: hash-contact
+            scope: body
+            match: { exact: [contact] }
+            action: hash
+        value_rules:
+          - name: drop-emails
+            pattern: '[a-z]+@[a-z]+\.com'
+            action: remove
+        """
+    )
+    redactor = Redactor(rules)
+    out = json.loads(redactor.redact('{"body":{"contact":"bob@example.com","note":"cc eve@example.com"}}'))
+    assert out["body"] == {"contact": key_digest("bob@example.com"), "note": "cc "}
+    assert redactor.counts == {"partial-contact": 0, "hash-contact": 1, "drop-emails": 1}
+
+
 # --- hash: tagged under a key rule, bare for a value rule ---------------------
 
 

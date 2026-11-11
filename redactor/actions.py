@@ -24,8 +24,10 @@ ACTIONS = frozenset({MASK, PARTIAL, HASH, REMOVE})
 
 # Actions from strictest to most permissive, ordered by how much of the
 # original value they leave behind: nothing, a constant, a digest that can be
-# linked and guessed, real characters. When several value rules match
-# overlapping text, the strictest action is applied to all of it.
+# linked and guessed, real characters. Rules that compete are settled by this
+# order: when several value rules match overlapping text, the strictest action
+# is applied to all of it, and when several key rules match one key, the
+# strictest of them is the one that applies.
 STRICTEST_FIRST = (REMOVE, MASK, HASH, PARTIAL)
 
 # A digest produced for a key rule is this tag followed by 64 lowercase hex digits.
