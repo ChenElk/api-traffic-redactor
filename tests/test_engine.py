@@ -559,11 +559,28 @@ def test_equal_strictness_is_decided_by_the_order_in_the_file():
     assert run("abcdef", two_then_one) == (value_digest("abcdef"), {"two": 1})
 
 
-def test_a_rule_does_not_overlap_itself():
+def test_a_rule_without_a_validator_does_not_overlap_itself():
     # After a match the search resumes at its end: "aba" is found once in
     # "ababa", and "aa" twice in "aaaa" as two ranges that only touch.
     assert run("ababa", value_rules(("r", "aba", "mask"))) == ("****ba", {"r": 1})
     assert run("aaaa", value_rules(("r", "aa", "mask"))) == ("********", {"r": 2})
+
+
+def test_a_rule_with_a_validator_finds_candidates_inside_an_accepted_match():
+    # The validator judges one candidate at a time, so the search resumes one
+    # character after an accepted match. Overlapping matches merge into one
+    # range, counted once. Here every candidate of digits passes.
+    rules = rules_from(
+        r"""
+        value_rules:
+          - name: pairs
+            pattern: '\d{2}'
+            validator: luhn
+            action: mask
+        """
+    )
+    # Luhn-valid pairs that overlap: 26, 67, 75 (each passes), so "2675" is one range.
+    assert run("x 2675 y", rules) == ("x **** y", {"pairs": 1})
 
 
 def test_the_same_rule_twice_in_one_chain_is_still_one_range():

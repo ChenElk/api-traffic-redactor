@@ -493,8 +493,9 @@ def _split_form(text: str) -> tuple[str, str, str] | None:
 def _find_matches(rule: ValueRule, text: str) -> list[tuple[int, int]]:
     """Return the (start, end) spans in `text` that `rule` matches and accepts.
 
-    The spans of one rule never overlap each other: after an accepted match
-    the search resumes where that match ended.
+    The spans of a rule without a validator never overlap each other: after a
+    match the search resumes where it ended. With a validator they may, and
+    _merge_overlapping joins them into one range.
     """
     spans = []
     position = 0
@@ -506,7 +507,14 @@ def _find_matches(rule: ValueRule, text: str) -> list[tuple[int, int]]:
             position = end + 1
         elif rule.validator is None or rule.validator(match.group()):
             spans.append((start, end))
-            position = end
+            # A validator judges one candidate at a time, so a valid one can
+            # start inside an accepted one: in "4111 1111 1111 1111 3129 3741
+            # 1406" the last group of the first card also begins a card. Left
+            # for the next run, it would be found there next to the four
+            # digits `partial` keeps, and the output would not be idempotent.
+            # A pattern without a validator sets its own boundaries; resuming
+            # inside its match would only find pieces of the same text.
+            position = start + 1 if rule.validator is not None else end
         else:
             # The validator refused this candidate. Resume one character
             # later, not after it: with a pattern that allows separators,

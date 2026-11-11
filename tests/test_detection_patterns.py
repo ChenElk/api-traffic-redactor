@@ -452,10 +452,13 @@ def test_sixteen_digits_followed_by_three_are_decided_by_luhn():
         # has the right structure and fails Luhn; the card starts inside it.
         (f"paid 2024 {VISA_SPACES} ok", f"paid 2024 {partial(VISA_SPACES)} ok"),
         (f"qty 12 {VISA_SPACES}", f"qty 12 {partial(VISA_SPACES)}"),
-        # Two cards separated by one space.
+        # Two cards separated by one space. Written in groups, the groups in
+        # the middle ("1111 1111 1111 5555", ...) are candidates too; one of
+        # them passes Luhn, so the two cards merge into one redaction. That
+        # hides the first card's last four digits as well: more, never less.
         (
             f"{VISA_SPACES} {grouped(MASTERCARD, SIXTEEN)}",
-            f"{partial(VISA_SPACES)} {partial(grouped(MASTERCARD, SIXTEEN))}",
+            partial(f"{VISA_SPACES} {grouped(MASTERCARD, SIXTEEN)}"),
         ),
         (f"{VISA} {MASTERCARD}", f"{partial(VISA)} {partial(MASTERCARD)}"),
         # A card followed by another group of four digits. A valid card is
@@ -499,10 +502,42 @@ def test_a_card_followed_by_eleven_more_digits_is_stable():
         assert redact_text(first) == first
 
 
-# Known limitation. `partial` keeps the last four digits of a card. If the
-# card is followed, after one space or hyphen, by exactly the groups that
-# complete the layout of another card, the four kept digits and those groups
-# are a candidate on the next run, and one such candidate in ten passes Luhn.
+def test_a_card_whose_last_group_also_starts_a_card_is_stable():
+    # The reported case: "1111 3129 3741 1406" is a valid card of its own,
+    # beginning with the four digits `partial` keeps of the first card. Both
+    # are found on the first run and merged into one redaction.
+    original = "4111 1111 1111 1111 3129 3741 1406"
+    assert luhn_valid("4111 1111 1111 1111") and luhn_valid("1111 3129 3741 1406")
+    once = redact_text(original)
+    assert once == "*" * 30 + "1406"
+    twice = redact_text(once)
+    assert twice == once
+
+
+# `partial` keeps the last four digits of a card. If the card is followed by
+# exactly the groups that complete the layout of another card, those four
+# digits and the groups after them are a candidate too, and one such candidate
+# in ten passes Luhn. When the card is written in groups, that candidate is
+# already found on the first run (the test above), and the output is stable.
+STABLE_FAMILIES = {
+    "a card and three groups of four": VISA_SPACES + " 2222 3333 {:04d}",
+    "a card, a group of six and a group of five": VISA_SPACES + " 822463 1{:04d}",
+    "hyphens": grouped(MASTERCARD, SIXTEEN, "-") + "-2222-3333-{:04d}",
+}
+
+
+@pytest.mark.parametrize("template", STABLE_FAMILIES.values(), ids=STABLE_FAMILIES.keys())
+def test_a_second_run_changes_nothing_when_the_kept_digits_are_a_group(template):
+    for number in range(1000):
+        first = redact_text(template.format(number))
+        assert redact_text(first) == first
+
+
+# Known limitation. When the kept four digits are not a group of their own in
+# the input (a card written without separators, or an American Express number,
+# whose last group has five digits), there is no word boundary in front of them
+# on the first run, so they begin no candidate. Once the digits before them are
+# masked there is one, and the second run finds the candidate.
 #
 # The tool cannot tell its own output from input that looks the same. The
 # only way to stop this would be to refuse a match that follows a run of fill
@@ -510,12 +545,9 @@ def test_a_card_followed_by_eleven_more_digits_is_stable():
 # which is the worse mistake. The tests pin down what does hold: the second
 # run can only hide more, never reveal, and the output is stable after it.
 SECOND_RUN_FAMILIES = {
-    "a card and three groups of four": VISA_SPACES + " 2222 3333 {:04d}",
     "a card without separators and three groups of four": VISA + " 2222 3333 {:04d}",
     "a 13-digit card and three groups of four": VISA_13 + " 2222 3333 {:04d}",
     "American Express and three groups of four": AMEX_SPACES + " 2222 3333 {:04d}",
-    "a card, a group of six and a group of five": VISA_SPACES + " 822463 1{:04d}",
-    "hyphens": grouped(MASTERCARD, SIXTEEN, "-") + "-2222-3333-{:04d}",
 }
 
 
