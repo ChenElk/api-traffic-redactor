@@ -2,7 +2,7 @@
 
 Redacts sensitive data from API traffic logs in NDJSON format. Detection is
 driven by a YAML rules file. It runs as a command-line tool or as an HTTP
-service, processes input as a stream, and reports redactions counts per rule.
+service, processes input as a stream, and reports redaction counts per rule.
 
 **Language.** The tool is written in Python rather than Go. Go is new to me, and
 I preferred to submit code I can explain, defend and change.
@@ -20,7 +20,7 @@ python -m pytest
 
 ### Command line
 
-```
+```text
 redactor [--rules rules.yaml] [input-file]
 ```
 
@@ -34,14 +34,13 @@ follow the supported rules format.
 redactor --rules rules.yaml input.ndjson > output.ndjson
 cat input.ndjson | redactor --rules rules.yaml
 redactor --rules configs/production.yaml input.ndjson > output.ndjson
-
 ```
 
 - **stdout** carries the redacted records and nothing else.
 - **stderr** carries one summary after the last record: line counts, replaced
   records per reason, and redactions per rule. It never contains record contents.
 
-```
+```text
 redactor: 50 lines: 45 processed, 2 blank, 3 replaced (invalid_json: 3)
 redactor: redactions by rule:
   auth-headers        9
@@ -52,15 +51,16 @@ redactor: redactions by rule:
 |---|---|
 | 0 | Every record was processed. |
 | 1 | I/O failure: unreadable input file, or the reader closed the pipe. |
-| 2 | Invalid arguments, or the rules file could not be loaded or validated Nothing is written to stdout. |
+| 2 | Invalid arguments, or the rules file could not be loaded or validated. Nothing is written to stdout. |
 | 3 | Finished, but at least one record was replaced by a placeholder. |
 
 ### Service mode
 
-```
+```text
 redactor --serve [--addr HOST:PORT] [--rules rules.yaml]
 ```
-By default, the service listens on 0.0.0.0:8080. Use --addr 127.0.0.1:8080 to accept local connections only.
+
+By default, the service listens on `0.0.0.0:8080`. Use `--addr 127.0.0.1:8080` to accept local connections only.
 The rules are loaded
 and validated before the port is opened.
 
@@ -79,10 +79,10 @@ curl -s -X POST --data-binary @input.ndjson http://127.0.0.1:8080/redact > outpu
 - **Health endpoint.** `GET /healthz` returns `200 {"status":"ok"}` when the
   service is responsive. Rules are validated at startup; the service does not
   start if validation fails. No external dependency checks are needed.
-- **Response.** POST /redact streams an application/x-ndjson response with status 200. Each input line produces one output line; records that cannot be safely processed are replaced by placeholders.
-- **Rules cannot be loaded:** the process exits with code 2 and never opens
+- **Response.** `POST /redact` streams an `application/x-ndjson` response with status `200`. Each input line produces one output line; records that cannot be safely processed are replaced by placeholders.
+- **Rules cannot be loaded.** The process exits with code 2 and never opens
   the port. There is no state in which it accepts traffic without rules.
-- **Logging:** one summary line per /redact request on stderr, containing counts and fixed diagnostic labels, never record contents.
+- **Logging.** One summary line per `/redact` request on stderr, containing counts and fixed diagnostic labels, never record contents.
 
 ## Docker
 
@@ -134,15 +134,15 @@ written twice in one YAML mapping; or a file with no rules at all.
 | A key rule owns everything under its key; value rules are not consulted there | A matching key rule determines how the entire value is redacted; value rules are not applied within it. | |
 | Scopes: keys of `headers` and `response.headers` are `headers`; every other name, at any depth (including form fields and query parameters), is `body` | The record layout is the only schema the engine knows, so it stays generic. | A `headers` object inside a body is body scope. |
 | Value rules scan strings only, never JSON numbers | Turning numbers into masked strings breaks the schema. | A card stored as a JSON number is not found. |
-\| Patterns compiled with `re.ASCII` | Ensures `\b` uses ASCII-based word boundaries and `\d` matches ASCII digits. This allows card numbers adjacent to non-ASCII text, such as `カード4012888888881881です`, to be detected. |
+| Patterns compiled with `re.ASCII` | Ensures `\b` uses ASCII-based word boundaries and `\d` matches ASCII digits. This allows card numbers adjacent to non-ASCII text, such as `カード4012888888881881です`, to be detected. | |
 | Overlapping value matches are merged and the strictest action is applied once (`remove` > `mask` > `hash` > `partial`) | Text matched by any rule is never left readable because another rule won the overlap: `sk_live_abc@example.com` becomes one `****`. | The merged range is counted under one rule only. |
 
-The four supported actions are mask, partial, hash and remove. `partial` hides a value of 4 characters or fewer
+The four supported actions are `mask`, `partial`, `hash` and `remove`. `partial` hides a value of 4 characters or fewer
 completely, since keeping "the last 4" of `1234` would redact nothing. For `hash`, see [Hashing and idempotency](#hashing-and-idempotency).
 
 For `mask`, `partial` and `hash`, a key rule applied to a nested object or
 array preserves its structure and redacts the string and number values inside
-it. 
+it.
 
 For example, a `mask` key rule matching `password` transforms:
 
@@ -162,7 +162,6 @@ string `"****"`.
 Values such as `null`, `true`, `false` and empty strings remain unchanged. A `remove`
 key rule drops the entire key, including any nested content.
 
-
 ### Recursion and embedded content
 
 - **Parsing.** The standard `json` module with two hooks: an object becomes a
@@ -179,7 +178,7 @@ key rule drops the entire key, including any nested content.
   parsed, and no value rule recognises `hunter2`. If unparseable text that
   starts with `{` or `[` shows a quoted key that a key rule targets, the record
   is refused (`invalid_embedded_json`); otherwise it is plain text such as
-  `[INFO] started`(value rules still scan this text and redact matches without
+  `[INFO] started` (value rules still scan this text and redact matches without
   requiring valid JSON). *Trade-off:* a record with a truncated body that names a
   sensitive field is replaced by a placeholder, instead of leaking it.
 
@@ -192,13 +191,13 @@ key rule drops the entire key, including any nested content.
   1 MiB by default; a longer line is discarded as it
   arrives, and replaced by a placeholder. Input is read in 64 KiB chunks and each result is written before the
   next read.
-Processing a single record requires additional memory for the parsed JSON and
-redacted output. Both CLI and HTTP modes use a fixed 1 MiB line limit; lines
-exceeding it are replaced by placeholders. This limit is not configurable
-through the command line.
+  Processing a single record requires additional memory for the parsed JSON and
+  redacted output. Both CLI and HTTP modes use a fixed 1 MiB line limit; lines
+  exceeding it are replaced by placeholders. This limit is not configurable
+  through the command line.
 - **Time.** The stream does constant work per byte. Overall time also depends
   on the number of rules and on how their regexes behave on the data, so it is
-  not linear by construction (see "Known limitations"). 
+  not linear by construction (see "Known limitations").
 
 ### Failure handling
 
@@ -252,15 +251,15 @@ does not: a key rule matches the key *name*, so on a second run it fires again
 on `X-Api-Key` and would hash the hash. A bare SHA-256 digest cannot be
 recognised safely, because an ordinary API key can also be 64 hex characters.
 
-**Decision:** two output forms, chosen by the kind of rule.
+**Decision.** Two output forms, chosen by the kind of rule.
 
-- **Key rule:** `sha256:<64 hex>`. A value already in exactly this form is left
+- **Key rule.** `sha256:<64 hex>`. A value already in exactly this form is left
   as is.
-- **Value rule:** the bare digest, as the brief words it. A digest no longer
-    looks like an e-mail address, so the rule does not fire again and nothing has
-    to be recognised. This holds for the current e-mail rule; custom value-rule
-    patterns may match a digest, so idempotency must be checked when changing
-    the rules.
+- **Value rule.** The bare digest, as the brief words it. A digest no longer
+  looks like an e-mail address, so the rule does not fire again and nothing has
+  to be recognised. This holds for the current e-mail rule; custom value-rule
+  patterns may match a digest, so idempotency must be checked when changing
+  the rules.
 
 *Trade-off:* the tagged form deviates from the brief's wording for key rules.
 
@@ -279,16 +278,16 @@ ways:
 
 The second case looks redacted and is easy to miss.
 
-**Fix.** One line in `rules.yaml`;
+**Fix.** One line in `rules.yaml`:
 
-```
+```text
 before: eyJ[A-Za-z0-9+/=]+\.[A-Za-z0-9+/=]+\.[A-Za-z0-9+/=]*
 after:  eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]*
 ```
 
 **Result.** The rule fires 4 times instead of 2 on the sample, and no `eyJ` is
 left in the output. Regression tests in `tests/test_detection_patterns.py`
- cover `-` and `_` in each part, tokens in
+cover `-` and `_` in each part, tokens in
 headers, cookies, query strings, free text and nested JSON, unsigned tokens
 (empty signature), look-alikes that must stay, and a second run.
 
@@ -323,7 +322,7 @@ those adjacent digits can be included in the redaction.
 starts another valid card, both candidates are found on the first run and merged into one redaction, so a second
 run changes nothing:
 
-```
+```text
 input   4111 1111 1111 1111 3129 3741 1406
 run 1   ******************************1406
 run 2   ******************************1406
@@ -334,7 +333,7 @@ separators, or an American Express number, whose last group has five digits), th
 them until the digits before them are masked, so the candidate they begin is only found on the second run, and one
 such input in ten changes again:
 
-```
+```text
 input   4111111111111111 2222 3333 0004
 run 1   ************1111 2222 3333 0004
 run 2   ***************************0004
@@ -349,16 +348,17 @@ Non-card identifiers can also match these layouts and pass Luhn, causing false p
 ## Deployment notes
 
 ### Dockerfile
-The Dockerfile uses a two-stage build with python:3.14-slim and runs the application as a non-root user. It includes a default rules file at /etc/redactor/rules.yaml and starts in HTTP service mode. Health checks are configured in the Kubernetes manifest through /healthz.
 
-**Docker validation performed:** image build, container startup, a successful
-`/healthz` check, and password masking through `POST /redact`. 
+The Dockerfile uses a two-stage build with `python:3.14-slim` and runs the application as a non-root user. It includes a default rules file at `/etc/redactor/rules.yaml` and starts in HTTP service mode. Health checks are configured in the Kubernetes manifest through `/healthz`.
+
+**Docker validation performed.** Image build, container startup, a successful
+`/healthz` check, and password masking through `POST /redact`.
 
 ### Kubernetes manifests
 
 The `k8s/redactor.yaml` manifest contains a Deployment and a ClusterIP Service.
 
-The Deployment runs one replica of the redactor on port 8080. A readiness probe checks /healthz; the Service routes traffic only to ready Pods. The Service provides a stable internal endpoint.
+The Deployment runs one replica of the redactor on port 8080. A readiness probe checks `/healthz`; the Service routes traffic only to ready Pods. The Service provides a stable internal endpoint.
 
 The manifest uses the rules file already packaged in the Docker image. Before deployment, the image must be available to the cluster nodes, either through a container registry or by loading it directly.
 
@@ -366,7 +366,8 @@ The manifest has not been tested on a running Kubernetes cluster.
 
 ## Known limitations and what I would do with more time
 
-**Detection**
+### Detection
+
 - **Regex backtracking.** The provided e-mail pattern is quadratic on a long run
   of letters; the JWT pattern is
   quadratic on repeated `eyJ`. *Next:* bound the e-mail parts to the limits of
@@ -378,7 +379,8 @@ The manifest has not been tested on a running Kubernetes cluster.
   is not redacted: whitespace prevents form parsing, and `hunter2` does not
   match any configured value rule.
 
-**Hashing**
+### Hashing
+
 - Unsalted SHA-256 is pseudonymisation, not anonymisation: guessable values
   such as e-mail addresses can be recovered by hashing candidates. *Next:*
   HMAC-SHA-256 with a key stored outside the logs.
@@ -388,10 +390,12 @@ The manifest has not been tested on a running Kubernetes cluster.
   digests (for example an unanchored `\d{13,19}`). The tests check this for
   the provided rules; a new rules file needs the same check.
 
-**Service**
+### Service
+
 - Long-running regex searches can delay concurrent requests, including health checks. Process isolation is a possible future improvement.
 
-**Resources**
+### Resources
+
 Memory usage depends on record size, parsed structure and concurrent requests.
 The fixed 1 MiB line limit does not cap total process memory; deployment memory
 limits should account for parsing overhead and concurrent requests.
