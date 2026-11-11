@@ -1,0 +1,37 @@
+
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: redactor
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: redactor
+  template:
+    metadata:
+      labels:
+        app: redactor
+    spec:
+      containers:
+        - name: redactor
+          image: api-traffic-redactor:dev
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8080
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: redactor
+spec:
+  type: ClusterIP
+  selector:
+    app: redactor
+  ports:
+    - port: 8080
+      targetPort: 8080
