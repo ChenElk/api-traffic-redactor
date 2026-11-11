@@ -343,14 +343,17 @@ def test_key_rule_hash_on_a_form_field_is_tagged():
     assert out["body"] == f"api_key={key_digest('abc')}&x=1"
 
 
-def test_bare_digests_do_not_match_any_value_rule_of_the_provided_file():
+def test_bare_digests_are_not_matched_by_any_value_rule_of_the_provided_file():
     # A value-rule digest carries no marker, so idempotency rests on this:
-    # no value pattern may match a digest, alone or surrounded by other text.
-    for number in range(2_000):
-        bare = value_digest(f"user{number}@example.com")
-        for text in (bare, f"mail {bare}, {bare};{bare}.", f"id-{bare}-end", f"({bare})"):
-            for rule in PROVIDED.value_rules:
-                assert rule.pattern.search(text) is None, f"{rule.name} matches a digest"
+    # no value rule may match a digest, alone or surrounded by other text.
+    digests = [value_digest(f"user{number}@example.com") for number in range(2_000)]
+    line = json.dumps(
+        {
+            "alone": digests,
+            "in text": [f"mail {d}, {d};{d}. id-{d}-end ({d})" for d in digests],
+        }
+    )
+    assert redact(line) is line
 
 
 # --- value rules --------------------------------------------------------------

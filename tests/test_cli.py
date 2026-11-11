@@ -9,10 +9,12 @@ import json
 import os
 import subprocess
 import sys
+import threading
 from pathlib import Path
 
 import pytest
 
+from redactor.actions import sha256_digest
 from redactor.cli import EXIT_IO_ERROR, EXIT_OK, EXIT_RECORDS_REPLACED, EXIT_USAGE
 from redactor.engine import Redactor
 from redactor.rules import load_rules
@@ -112,6 +114,142 @@ def test_the_tool_is_idempotent_end_to_end(sample_run):
     lines = stderr_text(second).splitlines()
     assert lines[0] == "redactor: 50 lines: 48 processed, 2 blank, 0 replaced"
     assert all(line.endswith(" 0") for line in lines[2:])
+
+
+# One transaction in the shape of the brief, with every kind of sensitive
+# value the rules target: credentials in headers, nested fields, a card and a
+# token inside free text, a form-encoded field, a query string, and JSON
+# stored in a string. The expected output is written out by hand.
+GOLDEN_RECORD = {
+    "ts": "2025-03-01T12:00:00Z",
+    "method": "POST",
+    "path": "/v1/pay?token=tok_123&page=2",
+    "headers": {"Authorization": "Bearer secret-token", "X-Api-Key": "key-1", "Content-Type": "application/json"},
+    "body": {
+        "user": {"email": "ann@example.com", "password": "hunter2"},
+        "card": {"card_number": "4111111111111111", "cvv": "123"},
+        "note": "backup card 5555 5555 5555 4444, id_token eyJhbGciOiJIUzI1NiJ9.eyJhIjoiPz8_In0.sig-_x",
+        "form": "email=bob%40example.com&password=pw&remember=on",
+    },
+    "response": {
+        "status": 200,
+        "headers": {"Set-Cookie": "session=abc"},
+        "body": '{"token":"t-1","items":["carol@example.com"]}',
+    },
+}
+
+
+def value_digest(text: str) -> str:
+    return sha256_digest(text, tagged=False)
+
+
+def test_one_record_with_every_kind_of_sensitive_value():
+    line = json.dumps(GOLDEN_RECORD, separators=(",", ":")).encode("utf-8") + b"\n"
+    process = run_cli(stdin=line)
+
+    assert process.stdout.endswith(b"\n") and b"\n" not in process.stdout[:-1]  # one compact line
+    assert json.loads(process.stdout) == {
+        "ts": "2025-03-01T12:00:00Z",
+        "method": "POST",
+        "path": "/v1/pay?token=****&page=2",  # `token` is a key rule, also in a query string
+        "headers": {
+            "Authorization": "****",  # mask
+            "X-Api-Key": sha256_digest("key-1", tagged=True),  # hash under a key rule: tagged
+            "Content-Type": "application/json",
+        },
+        "body": {
+            "user": {"email": value_digest("ann@example.com"), "password": "****"},
+            "card": {"card_number": "************1111"},  # partial; `cvv` is removed
+            "note": "backup card ***************4444, id_token ****",  # Luhn-valid card and a JWT in text
+            "form": f"email={value_digest('bob@example.com')}&password=****&remember=on",
+        },
+        "response": {
+            "status": 200,
+            "headers": {"Set-Cookie": "****"},
+            "body": '{"token":"****","items":["' + value_digest("carol@example.com") + '"]}',
+        },
+    }
+    for secret in (b"secret-token", b"key-1", b"hunter2", b"ann@", b"bob%40", b"carol@", b"4111", b"5555", b"eyJ", b"t-1", b"session=abc", b"tok_123", b'"cvv"'):
+        assert secret not in process.stdout
+    assert stderr_text(process).splitlines() == [
+        "redactor: 1 lines: 1 processed, 0 blank, 0 replaced",
+        "redactor: redactions by rule:",
+        "  auth-headers            2",  # Authorization, Set-Cookie
+        "  api-key-names           1",
+        "  secret-fields           4",  # the query string, two passwords, the embedded token
+        "  card-number-fields      1",
+        "  cvv-fields              1",
+        "  email                   3",
+        "  jwt                     1",
+        "  credit-card             1",
+        "  credit-card-19-grouped  0",
+        "  api-key-prefix          0",
+    ]
+    assert process.returncode == EXIT_OK
+
+
+# --- streaming through real pipes ---------------------------------------------
+
+
+def read_line_within(pipe, process, timeout: float = 30) -> bytes:
+    """Read one line from `pipe`; fail instead of hanging if none arrives in time."""
+    lines: list[bytes] = []
+    reader = threading.Thread(target=lambda: lines.append(pipe.readline()), daemon=True)
+    reader.start()
+    reader.join(timeout)
+    if reader.is_alive():
+        process.kill()
+        pytest.fail(f"no output line within {timeout} seconds")
+    return lines[0]
+
+
+def test_each_record_is_answered_while_the_input_is_still_open():
+    # A record goes in and its redacted line comes out before the next one is
+    # sent and long before stdin is closed. A tool that read its whole input
+    # first would produce nothing here until the end.
+    with subprocess.Popen(
+        [sys.executable, "-m", "redactor"],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        cwd=ROOT,
+    ) as process:
+        for number in (1, 2, 3):
+            process.stdin.write(b'{"n":%d,"password":"p%d"}\n' % (number, number))
+            process.stdin.flush()
+            assert read_line_within(process.stdout, process) == b'{"n":%d,"password":"****"}\n' % number
+        rest, errors = process.communicate(timeout=30)  # closes stdin
+    assert rest == b""
+    assert process.returncode == EXIT_OK
+    assert errors.decode("utf-8").splitlines()[0] == "redactor: 3 lines: 3 processed, 0 blank, 0 replaced"
+
+
+def test_records_that_span_the_read_chunks_are_redacted_whole():
+    # The tool reads 64 KiB at a time. 3,000 records of varying length put a
+    # chunk boundary inside records and inside values, and one record is
+    # longer than a chunk by itself. Every output line is checked.
+    def pad(number: int) -> bytes:
+        return b" " * (100_000 if number == 1500 else number % 97)
+
+    records = [
+        b'{"n":%d,"password":"p%d","email":"user%d@example.com","pad":"%s"}' % (n, n, n, pad(n))
+        for n in range(1, 3001)
+    ]
+    data = b"\n".join(records) + b"\n"
+    assert len(data) > 5 * 65536
+
+    process = run_cli(stdin=data)
+    lines = process.stdout.split(b"\n")
+    assert lines.pop() == b""
+    assert len(lines) == 3000
+    for number, line in enumerate(lines, start=1):
+        digest = value_digest(f"user{number}@example.com").encode("ascii")
+        assert line == b'{"n":%d,"password":"****","email":"%s","pad":"%s"}' % (number, digest, pad(number))
+    assert process.returncode == EXIT_OK
+    text = stderr_text(process)
+    assert text.splitlines()[0] == "redactor: 3000 lines: 3000 processed, 0 blank, 0 replaced"
+    assert f"  {'secret-fields':<22}  3000" in text
+    assert f"  {'email':<22}  3000" in text
 
 
 # --- stderr -------------------------------------------------------------------

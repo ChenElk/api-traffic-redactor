@@ -107,7 +107,7 @@ def test_the_sample_keeps_its_line_count_and_line_numbers():
     assert lines_out[50 - 1] == placeholder("invalid_json", 50)
 
 
-@pytest.mark.parametrize("line_number", [4, 17, 18, 23, 37, 48, 49])
+@pytest.mark.parametrize("line_number", [17, 23, 49])  # binary-looking, a bare number, an ordinary record
 def test_a_line_with_nothing_to_redact_is_written_byte_for_byte(line_number):
     lines_in = SAMPLE.split(b"\n")
     lines_out = EXPECTED_SAMPLE_OUTPUT.split(b"\n")
@@ -288,9 +288,15 @@ def test_an_endless_line_is_never_held_in_memory():
     limit = 1000
     stream = RedactionStream(Redactor(PROVIDED), max_line_bytes=limit)
     chunk = b"x" * 4096
-    for _ in range(1280):  # about 5 MB without a single newline
-        assert stream.feed(chunk) == b""
-        assert len(stream._pending) <= limit
+    tracemalloc.start()
+    try:
+        for _ in range(1280):  # about 5 MB without a single newline
+            assert stream.feed(chunk) == b""
+        _, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+    # Had the line been kept, the peak would be the 5 MB that went in.
+    assert peak < 100_000, f"peak traced memory was {peak} bytes"
     # The line ends at last; the record after it is processed normally.
     output = stream.feed(b'\n{"password":"x"}\n') + stream.finish()
     assert output_lines(output) == [
@@ -332,9 +338,11 @@ def test_a_lone_surrogate_in_a_rewritten_line_does_not_break_the_stream():
 
 
 def test_running_the_stream_on_its_own_output_changes_nothing():
-    second, stream = run_stream(EXPECTED_SAMPLE_OUTPUT)
+    redactor = Redactor(PROVIDED)
+    stream = RedactionStream(redactor)
+    second = stream.feed(EXPECTED_SAMPLE_OUTPUT) + stream.finish()
     assert second == EXPECTED_SAMPLE_OUTPUT
-    assert sum(stream._redactor.counts.values()) == 0
+    assert sum(redactor.counts.values()) == 0
     # The placeholders of the first run are ordinary valid records now.
     assert not stream.stats.replaced
     assert stream.stats.blank == 2

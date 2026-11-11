@@ -27,8 +27,10 @@ COPY --from=build /opt/venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH"
 
 # The rules are configuration, not code. This copy is a default, so that the
-# image works on its own; in Kubernetes a ConfigMap is mounted over it. If
-# the file at this path is missing or invalid, the service refuses to start.
+# image works on its own. The current Kubernetes manifest uses this bundled
+# file. A future deployment could mount a ConfigMap here without rebuilding
+# the image; the service must restart to load changed rules. If the file at
+# this path is missing or invalid, the service refuses to start.
 # The file belongs to root, so the service can read it but not change it.
 COPY rules.yaml /etc/redactor/rules.yaml
 

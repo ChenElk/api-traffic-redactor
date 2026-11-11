@@ -135,14 +135,17 @@ def test_the_alternative_file_is_idempotent_too():
     assert sum(second_pass.counts.values()) == 0
 
 
-def test_bare_digests_do_not_match_any_value_rule_of_the_alternative_file():
+def test_bare_digests_are_not_matched_by_any_value_rule_of_the_alternative_file():
     # The `ipv4-address` rule hashes with a bare digest. Idempotency holds only
-    # if no value pattern of this file matches such a digest.
-    for number in range(2_000):
-        bare = value_digest(f"10.0.{number // 256}.{number % 256}")
-        for text in (bare, f"from {bare}, {bare};{bare}.", f"id-{bare}-end", f"({bare})"):
-            for rule in ALTERNATIVE.value_rules:
-                assert rule.pattern.search(text) is None, f"{rule.name} matches a digest"
+    # if no value rule of this file matches such a digest.
+    digests = [value_digest(f"10.0.{number // 256}.{number % 256}") for number in range(2_000)]
+    line = json.dumps(
+        {
+            "alone": digests,
+            "in text": [f"from {d}, {d};{d}. id-{d}-end ({d})" for d in digests],
+        }
+    )
+    assert Redactor(ALTERNATIVE).redact(line) is line
 
 
 @pytest.mark.parametrize("rules", [PROVIDED, ALTERNATIVE], ids=["provided", "alternative"])

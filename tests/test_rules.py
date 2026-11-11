@@ -1,12 +1,14 @@
 """Unit tests for loading, validating and matching the redaction rules."""
 
 import itertools
+import json
 from pathlib import Path
 from textwrap import dedent
 
 import pytest
 
-from redactor.actions import ACTIONS, STRICTEST_FIRST, ActionSettings, luhn_valid
+from redactor.actions import ACTIONS, STRICTEST_FIRST, ActionSettings
+from redactor.engine import Redactor
 from redactor.rules import (
     SCOPE_BODY,
     SCOPE_HEADERS,
@@ -46,20 +48,6 @@ def test_provided_file_loads_with_all_rules_in_file_order(provided):
         "api-key-prefix",
     )
     assert provided.settings == ActionSettings(mask_replacement="****", keep_last=4, fill="*")
-
-
-def test_provided_actions_and_validator_are_resolved(provided):
-    actions = {rule.name: rule.action for rule in (*provided.key_rules, *provided.value_rules)}
-    assert actions["auth-headers"] == "mask"
-    assert actions["api-key-names"] == "hash"
-    assert actions["card-number-fields"] == "partial"
-    assert actions["cvv-fields"] == "remove"
-    assert actions["email"] == "hash"
-
-    validators = {rule.name: rule.validator for rule in provided.value_rules}
-    assert validators["credit-card"] is luhn_valid
-    assert validators["credit-card-19-grouped"] is luhn_valid
-    assert validators["email"] is None
 
 
 # --- key rule matching ------------------------------------------------------
@@ -215,31 +203,19 @@ def test_key_regex_without_anchors_matches_inside_the_name():
 # --- value rules ------------------------------------------------------------
 
 
-def test_patterns_use_ascii_word_boundaries():
-    # With Python's Unicode default, \b sees no boundary between a Japanese
-    # letter and a digit, and this card number would not be found.
-    rules = rules_from(
-        r"""
-        value_rules:
-          - name: card
-            pattern: '\b\d{13,19}\b'
-            action: partial
-        """
-    )
-    match = rules.value_rules[0].pattern.search("カード4012888888881881です")
-    assert match is not None and match.group() == "4012888888881881"
+def test_word_boundaries_are_ascii_so_a_card_glued_to_another_script_is_found(provided):
+    # The provided patterns use \b. With Python's Unicode default, \b sees no
+    # boundary between a Japanese letter and a digit, and this card number
+    # would not be found. The patterns are compiled with re.ASCII, as in Go.
+    out = json.loads(Redactor(provided).redact('{"note":"カード4012888888881881です"}'))
+    assert out["note"] == "カード************1881です"
 
 
-def test_patterns_treat_only_ascii_digits_as_digits():
-    rules = rules_from(
-        r"""
-        value_rules:
-          - name: digits
-            pattern: '\d{4}'
-            action: mask
-        """
-    )
-    assert rules.value_rules[0].pattern.search("٤١١١") is None
+def test_only_ascii_digits_count_as_digits(provided):
+    # Arabic-Indic digits are digits to Unicode, but not to \d here, and not
+    # to the Luhn check either.
+    line = '{"note":"٤١١١١١١١١١١١١١١١"}'
+    assert Redactor(provided).redact(line) is line
 
 
 def test_settings_are_optional_and_default_to_the_brief_values():

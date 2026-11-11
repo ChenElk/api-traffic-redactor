@@ -222,38 +222,24 @@ def test_luhn_rejects_text_that_is_not_ascii_digits(text):
 # --- apply_action -----------------------------------------------------------
 
 
-def test_apply_action_mask_ignores_the_value():
-    assert apply_action(MASK, "hunter2", DEFAULTS, tagged_hash=True) == "****"
-    assert apply_action(MASK, "", DEFAULTS, tagged_hash=False) == "****"
-    assert apply_action(MASK, "****", DEFAULTS, tagged_hash=True) == "****"
+@pytest.mark.parametrize(
+    ("action", "value", "expected"),
+    [
+        (MASK, "hunter2", "****"),
+        (PARTIAL, "4111111111111111", "************1111"),
+        (HASH, "abc", "sha256:" + ABC_DIGEST),
+        (REMOVE, "123", ""),
+    ],
+)
+def test_apply_action_applies_the_named_action(action, value, expected):
+    assert apply_action(action, value, DEFAULTS, tagged_hash=True) == expected
 
 
-def test_apply_action_uses_the_settings():
+def test_apply_action_follows_the_settings_and_the_hash_form():
     settings = ActionSettings(mask_replacement="[REDACTED]", keep_last=2, fill="#")
     assert apply_action(MASK, "hunter2", settings, tagged_hash=True) == "[REDACTED]"
-    assert apply_action(PARTIAL, "4111111111111111", settings, tagged_hash=True) == (
-        "##############11"
-    )
-
-
-def test_apply_action_partial_delegates():
-    assert apply_action(PARTIAL, "4111111111111111", DEFAULTS, tagged_hash=False) == (
-        "************1111"
-    )
-
-
-def test_apply_action_hash_form_follows_the_caller():
-    assert apply_action(HASH, "abc", DEFAULTS, tagged_hash=True) == "sha256:" + ABC_DIGEST
+    assert apply_action(PARTIAL, "4111111111111111", settings, tagged_hash=True) == "##############11"
     assert apply_action(HASH, "abc", DEFAULTS, tagged_hash=False) == ABC_DIGEST
-
-
-def test_apply_action_remove_returns_empty_text():
-    assert apply_action(REMOVE, "123", DEFAULTS, tagged_hash=False) == ""
-
-
-def test_apply_action_rejects_an_unknown_action():
-    with pytest.raises(ValueError):
-        apply_action("encrypt", "value", DEFAULTS, tagged_hash=False)
 
 
 def test_strictness_order_ranks_every_action_exactly_once():

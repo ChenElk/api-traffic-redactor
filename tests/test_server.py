@@ -578,6 +578,21 @@ def test_a_client_that_disconnects_while_receiving(service):
     assert request(service.port, "POST", "/redact", body=RECORD)[2] == REDACTED_RECORD
 
 
+# --- the service and the command-line tool agree ------------------------------
+
+
+@pytest.mark.parametrize(
+    "data",
+    [SAMPLE, RECORD * 3 + b'{"password":"hunter2"\n' + RECORD],
+    ids=["the sample", "good lines around a broken one"],
+)
+def test_the_service_gives_the_bytes_the_command_line_tool_writes(service, data):
+    from_cli = subprocess.run([sys.executable, "-m", "redactor"], input=data, capture_output=True, cwd=ROOT)
+    status, _, from_service = request(service.port, "POST", "/redact", body=data)
+    assert status == 200
+    assert from_service == from_cli.stdout
+
+
 # --- idempotency --------------------------------------------------------------
 
 

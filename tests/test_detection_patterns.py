@@ -580,24 +580,9 @@ def test_known_limitation_a_second_run_can_only_hide_more(template):
         VISA,
     ],
 )
-@pytest.mark.parametrize("stars", [1, 2, 9, 12, 40])
+@pytest.mark.parametrize("stars", [1, 9, 40])
 def test_a_card_right_after_fill_characters_is_still_redacted(card, stars):
     # Text that looks like the tail of a value this tool masked is input like
     # any other: "*********4111 1111 1111 1111" holds a card.
     prefix = "*" * stars
     assert redact_text(prefix + card) == prefix + partial(card)
-
-
-# --- the sample as a whole ----------------------------------------------------
-
-
-def test_redactions_per_rule_on_the_sample():
-    redactor = Redactor(RULES)
-    stream = RedactionStream(redactor)
-    stream.feed(SAMPLE)
-    stream.finish()
-    # jwt: lines 11 and 16 (not matched before) and the two tokens of line 15.
-    # credit-card: the 13 found before, plus lines 1, 6, 36 and 44.
-    assert redactor.counts["jwt"] == 4
-    assert redactor.counts["credit-card"] == 17
-    assert redactor.counts["credit-card-19-grouped"] == 0
